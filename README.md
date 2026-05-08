@@ -28,6 +28,11 @@
 - TS-Conf (TS-Labs) — расширение ZX Spectrum: 14 МГц Z80, 4 МБ RAM, DMA blitter, TSU спрайтовый процессор, 256C T0 canvas 360×288.
 - Эмулятор: Unreal Speccy 0.39.x (driver=gdi).
 
+## Кредиты / источники графики
+
+- Спрайты шаров и destroy-анимация (`graphics/spritesheet.png`, `_gameobjects_hd.png`) взяты из проекта **[Zuma-Deluxe-HD](https://github.com/GalaxyShad/Zuma-Deluxe-HD)** (автор GalaxyShad, MIT-лицензия для кода). Все ассеты принадлежат PopCap Games / EA.
+- Оригинальная Zuma Deluxe (2003) — [PopCap Games](https://www.popcap.com).
+
 ## Сборка
 
 См. отдельный репозиторий с asm-кодом (`c:\z80\zuma\`).
