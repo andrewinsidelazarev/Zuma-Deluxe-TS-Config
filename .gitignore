@@ -1,0 +1,20 @@
+# Временные / архивы
+*.rar
+*.zip
+*.7z
+~$*
+
+# Распакованные office-файлы
+*_unzipped/
+
+# Редакторские
+*.bak
+.vscode/
+.idea/
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini

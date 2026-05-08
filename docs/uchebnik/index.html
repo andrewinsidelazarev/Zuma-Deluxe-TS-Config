@@ -1,0 +1,1140 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Программирование под TS-Config — практический учебник</title>
+<style>
+  :root {
+    --bg: #1a1d23;
+    --fg: #d8dee9;
+    --accent: #88c0d0;
+    --accent2: #a3be8c;
+    --warn: #ebcb8b;
+    --err: #bf616a;
+    --code-bg: #2e3440;
+    --code-fg: #eceff4;
+    --code-kw: #81a1c1;
+    --code-num: #d08770;
+    --code-cmt: #616e88;
+    --code-str: #a3be8c;
+    --border: #3b4252;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fdfdfa;
+      --fg: #2e3440;
+      --accent: #1d6f8a;
+      --accent2: #4c6f1c;
+      --warn: #b88800;
+      --err: #a02830;
+      --code-bg: #f0f3f8;
+      --code-fg: #2e3440;
+      --code-kw: #1d6f8a;
+      --code-num: #b04f1f;
+      --code-cmt: #616e88;
+      --code-str: #4c6f1c;
+      --border: #cfd5df;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 16px/1.65 -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg); color: var(--fg);
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    min-height: 100vh;
+  }
+  nav {
+    background: var(--code-bg);
+    border-right: 1px solid var(--border);
+    padding: 1.5rem 1rem;
+    position: sticky; top: 0; height: 100vh;
+    overflow-y: auto;
+    font-size: 14px;
+  }
+  nav h2 { color: var(--accent); margin: 0 0 0.5rem 0; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  nav ul { list-style: none; margin: 0 0 1.5rem 0; padding: 0; }
+  nav li { margin: 0.3rem 0; }
+  nav a { color: var(--fg); text-decoration: none; display: block; padding: 0.2rem 0.4rem; border-radius: 3px; }
+  nav a:hover { background: var(--border); color: var(--accent); }
+  main {
+    padding: 2rem 3rem 4rem 3rem;
+    max-width: 1000px;
+  }
+  h1 { color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 0.3em; }
+  h2 { color: var(--accent); margin-top: 2.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+  h3 { color: var(--accent2); margin-top: 1.8em; }
+  h4 { color: var(--accent2); }
+  p { margin: 0.8em 0; }
+  a { color: var(--accent); }
+  code {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font: 14px/1.4 "JetBrains Mono", "Consolas", monospace;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 1em 1.2em;
+    border-radius: 6px;
+    overflow-x: auto;
+    border-left: 3px solid var(--accent);
+    font: 13px/1.55 "JetBrains Mono", "Consolas", monospace;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+  .kw   { color: var(--code-kw); font-weight: 600; }
+  .num  { color: var(--code-num); }
+  .cmt  { color: var(--code-cmt); font-style: italic; }
+  .str  { color: var(--code-str); }
+  .label { color: var(--accent); }
+
+  table { border-collapse: collapse; margin: 1em 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 0.4em 0.8em; text-align: left; }
+  th { background: var(--code-bg); color: var(--accent); }
+
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--code-bg);
+    padding: 0.8em 1.2em;
+    margin: 1em 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout.warn  { border-color: var(--warn); }
+  .callout.danger { border-color: var(--err); }
+  .callout.tip   { border-color: var(--accent2); }
+  .callout strong:first-child { color: var(--accent); }
+  .callout.warn strong:first-child { color: var(--warn); }
+  .callout.danger strong:first-child { color: var(--err); }
+  .callout.tip strong:first-child { color: var(--accent2); }
+
+  img { max-width: 100%; border: 1px solid var(--border); border-radius: 4px; margin: 1em 0; }
+  figure { margin: 1.5em 0; text-align: center; }
+  figcaption { font-size: 14px; color: var(--code-cmt); margin-top: 0.5em; font-style: italic; }
+
+  .svg-diagram {
+    display: block; margin: 1.5em auto;
+    background: var(--code-bg);
+    padding: 1em;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+
+  .toc-back { position: fixed; bottom: 2rem; right: 2rem; background: var(--accent); color: var(--bg);
+    padding: 0.6em 1em; border-radius: 4px; text-decoration: none; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+
+  @media (max-width: 900px) {
+    body { grid-template-columns: 1fr; }
+    nav { position: static; height: auto; }
+    main { padding: 1.5rem; }
+  }
+</style>
+</head>
+<body>
+
+<nav id="toc">
+  <h2>Содержание</h2>
+  <ul>
+    <li><a href="#intro">1. Что такое TS-Config</a></li>
+    <li><a href="#tools">2. Инструменты и проект</a></li>
+    <li><a href="#ports">3. Порты — основа всего</a></li>
+    <li><a href="#video">4. Видеорежим</a></li>
+    <li><a href="#memory">5. Страничная память</a></li>
+    <li><a href="#palette">6. Палитра и FMaps</a></li>
+    <li><a href="#dma">7. DMA</a></li>
+    <li><a href="#tsu-sprites">8. TSU — спрайты</a></li>
+    <li><a href="#tsu-tiles">9. TSU — тайлы и фон</a></li>
+    <li><a href="#scroll">10. Скроллинг</a></li>
+    <li><a href="#kempston">11. Клавиатура и мышь</a></li>
+    <li><a href="#gotchas">12. Грабли — обязательно прочитать!</a></li>
+    <li><a href="#layout">13. Раскладка SFILE на практике</a></li>
+    <li><a href="#convert">14. Конвертация графики 4bpp</a></li>
+    <li><a href="#zuma">15. Zuma как пример</a></li>
+    <li><a href="#advanced">16. Продвинутые техники</a></li>
+    <li><a href="#ports-ref">Приложение: порты</a></li>
+  </ul>
+  <h2>Об учебнике</h2>
+  <p style="font-size: 13px; color: var(--code-cmt);">Версия от 2026-05-08. Написано на основе оригинального учебника С.С. Слободчикова + опыт реальной разработки игры Zuma Deluxe на Z80. Раздел 16 добавлен по итогам решения реальных проблем (DMA X-granularity, Fixed Timestep, VDC модель цепочки, Python-эмулятор для отладки физики). 16.5 — fix-pack из 13 связанных багов VDC, найденных в Python и портированных в asm за одну сессию.</p>
+</nav>
+
+<main>
+
+<h1>Программирование под TS-Config</h1>
+<p><em>Практический учебник с подробным разбором граблей, на которых вы наверняка наступите. Адресован тем, кто впервые открывает для себя ZX Evolution / TS-Config и хочет писать на Z80 не «учебные мигалки бордюром», а реальную игру — с аппаратными спрайтами, тайлами, мышью и DMA.</em></p>
+
+<p>Этот учебник переработан из <a href="https://boosty.to/zxevolution">оригинального пособия С. С. Слободчикова</a>. Сохранена структура и большинство примеров. Но добавлено главное, что отсутствовало в оригинале: <strong>точный разбор подводных камней</strong>, без которого первая же реальная игра упирается в дни отладки. Эти подводные камни — реальный опыт разработки Zuma Deluxe на TS-Config.</p>
+
+<h2 id="intro">1. Что такое TS-Config</h2>
+<p>TS-Config (или TSConf) — расширенная конфигурация платформы ZX Evolution, развивающая идеи ZX Spectrum, но с радикально расширенными возможностями:</p>
+<ul>
+  <li><strong>4 МБ оперативной памяти</strong> (вместо 48–128 КБ Spectrum), переключаемая страницами по 16 КБ.</li>
+  <li><strong>Тактовая частота до 14 МГц</strong> (вместо 3.5 МГц), с кэшем.</li>
+  <li><strong>Видеорежимы до 360×288 точек</strong>, до 256 цветов, 16-цветный режим с 4 палитрами.</li>
+  <li><strong>Аппаратный видеопроцессор TSU</strong> — выводит спрайты и тайлы поверх фона на 7 слоях.</li>
+  <li><strong>DMA-контроллер</strong> со скоростью копирования 7 МБ/с.</li>
+  <li><strong>Kempston Mouse</strong> — мышь.</li>
+</ul>
+<p>Это не игрушка для ностальгии — это полноценная 8-битная игровая консоль с мощностью на уровне SNES.</p>
+
+<figure>
+  <img src="images/02-tsconfig-arhitektura.png" alt="Схема архитектуры TS-Config">
+  <figcaption>Общая архитектура TS-Config — слои графики, FMaps, страничная память.</figcaption>
+</figure>
+
+<h2 id="tools">2. Инструменты и проект</h2>
+<p>Минимальный набор:</p>
+<ul>
+  <li><a href="https://code.visualstudio.com/">VS Code</a> + расширения: <em>ASM Code Lens</em>, <em>Z80 Instruction Set</em>, <em>Z80 Assembly meter</em>.</li>
+  <li>Ассемблер <a href="https://github.com/z00m128/sjasmplus">sjasmplus</a> — командной строки, поддерживает синтаксис <code>--syntax=ab</code>.</li>
+  <li>Эмулятор <em>Unreal Speccy</em> с поддержкой TS-Config — для запуска и отладки.</li>
+  <li>Графический редактор <a href="https://graphicsgale.com/">Graphics Gale</a> или любой, поддерживающий 4bpp PNG/TGA. Я использую Python с PIL.</li>
+  <li>Готовый шаблонный проект Goody — <a href="https://lab.tsconf.net/Epsiloncool/goody.git">git-репозиторий</a>.</li>
+</ul>
+
+<figure>
+  <img src="images/08-vscode-ide-skrinshot.png" alt="VS Code с проектом TS-Config">
+  <figcaption>VS Code с открытым проектом Goody — типичная среда разработки.</figcaption>
+</figure>
+
+<h3>Структура проекта</h3>
+<pre><code><span class="kw">main.a80</span>          <span class="cmt">; основной цикл</span>
+<span class="kw">install_video.a80</span> <span class="cmt">; настройка видеорежима</span>
+<span class="kw">tsconf/</span>
+  start_tsc.a80    <span class="cmt">; начальный адрес и подгрузка файлов</span>
+  tsconfig2.asm   <span class="cmt">; описание портов TS-Config</span>
+<span class="kw">spgbld.ini</span>        <span class="cmt">; сборщик SPG-файла</span>
+<span class="kw">Gfx_Ready/</span>        <span class="cmt">; сконвертированная графика</span>
+</code></pre>
+
+<h2 id="ports">3. Порты — основа всего</h2>
+<p>TS-Config полностью управляется через порты. Все настройки видео, страниц, DMA, спрайтов делаются записью в порты. Старшие 8 бит порта обычно <code>#xxAF</code>:</p>
+<pre><code><span class="kw">VCONFIG</span>  <span class="kw">EQU</span> <span class="num">#00AF</span>  <span class="cmt">; видеорежим</span>
+<span class="kw">VPAGE</span>    <span class="kw">EQU</span> <span class="num">#01AF</span>  <span class="cmt">; страница видеопамяти</span>
+<span class="kw">PAGE0</span>    <span class="kw">EQU</span> <span class="num">#10AF</span>  <span class="cmt">; страница в slot 0 (#0000-#3FFF)</span>
+<span class="kw">PAGE3</span>    <span class="kw">EQU</span> <span class="num">#13AF</span>  <span class="cmt">; страница в slot 3 (#C000-#FFFF)</span>
+<span class="kw">SYSCONFIG</span> <span class="kw">EQU</span> <span class="num">#20AF</span> <span class="cmt">; тактовая частота, кэш</span>
+<span class="kw">FMADDR</span>   <span class="kw">EQU</span> <span class="num">#15AF</span>  <span class="cmt">; включение FMaps</span>
+<span class="kw">SGPAGE</span>   <span class="kw">EQU</span> <span class="num">#19AF</span>  <span class="cmt">; страница спрайтов TSU</span>
+</code></pre>
+<p>Полный список — в приложении в конце.</p>
+
+<h3>Базовая запись в порт</h3>
+<pre><code>    <span class="kw">LD</span> BC, VCONFIG     <span class="cmt">; адрес порта в BC</span>
+    <span class="kw">LD</span> A, <span class="num">%11100010</span>    <span class="cmt">; данные в A</span>
+    <span class="kw">OUT</span> (C), A           <span class="cmt">; запись</span>
+</code></pre>
+
+<h2 id="video">4. Видеорежим</h2>
+<p>Видеорежим задаётся одним байтом в порту <code>VCONFIG</code>. Биты:</p>
+<table>
+<tr><th>Биты</th><th>Назначение</th><th>Значения</th></tr>
+<tr><td>1–0</td><td>Цветовая глубина</td><td>00 = ZX, 01 = 16c, 10 = 256c, 11 = текст</td></tr>
+<tr><td>5</td><td>NOGFX</td><td>1 = выключить canvas (битмап-слой)</td></tr>
+<tr><td>7–6</td><td>Разрешение</td><td>00 = 256×192, 01 = 320×200, 10 = 320×240, 11 = 360×288</td></tr>
+</table>
+
+<figure>
+  <img src="images/01-vconfig-tablitsa-bitov.png" alt="Таблица VCONFIG">
+  <figcaption>Полная таблица битов VCONFIG из оригинальной документации.</figcaption>
+</figure>
+
+<h3>Пример: 360×288, 256 цветов, без canvas</h3>
+<pre><code>    <span class="kw">LD</span> BC, VCONFIG
+    <span class="kw">LD</span> A, <span class="num">%11100010</span>     <span class="cmt">; 11 = 360x288, 1 = NOGFX, 0 = MOBs, 10 = 256c</span>
+    <span class="kw">OUT</span> (C), A
+</code></pre>
+<p>Если canvas выключен (NOGFX=1), битмап-слой не рендерится — экран чёрный, на нём рисуются только TSU-слои (тайлы и спрайты). Это нужно для игр, где фон — тайлы, а не битмап.</p>
+
+<h2 id="memory">5. Страничная память</h2>
+<p>4 МБ памяти TS-Config разделены на 256 страниц по 16 КБ. Z80 видит 64 КБ (4 слота по 16 КБ). В каждый слот можно подгрузить любую из 256 страниц через свой порт:</p>
+<pre><code><span class="kw">PAGE0</span>  <span class="kw">EQU</span> <span class="num">#10AF</span>   <span class="cmt">; slot 0: #0000..#3FFF</span>
+<span class="kw">PAGE1</span>  <span class="kw">EQU</span> <span class="num">#11AF</span>   <span class="cmt">; slot 1: #4000..#7FFF</span>
+<span class="kw">PAGE2</span>  <span class="kw">EQU</span> <span class="num">#12AF</span>   <span class="cmt">; slot 2: #8000..#BFFF</span>
+<span class="kw">PAGE3</span>  <span class="kw">EQU</span> <span class="num">#13AF</span>   <span class="cmt">; slot 3: #C000..#FFFF</span>
+</code></pre>
+<p>Например, чтобы получить доступ к графике в странице <code>#07</code> через адреса <code>#C000..#FFFF</code>:</p>
+<pre><code>    <span class="kw">LD</span> BC, PAGE3
+    <span class="kw">LD</span> A, <span class="num">#07</span>
+    <span class="kw">OUT</span> (C), A
+    <span class="cmt">; теперь #C000 = первый байт страницы 7</span>
+</code></pre>
+
+<h3>Видеопамять (canvas-режим)</h3>
+<p>В canvas-режиме видеопамять занимает <strong>3 страницы</strong> подряд, начиная с указанной в <code>VPAGE</code>. По умолчанию это страницы <code>#10, #11, #12</code>. Очистка экрана:</p>
+<pre><code>    <span class="kw">LD</span> BC, PAGE3 : <span class="kw">LD</span> A, <span class="num">#10</span> : <span class="kw">OUT</span> (C), A   <span class="cmt">; включаем page 10</span>
+    <span class="kw">LD</span> HL, <span class="num">#C000</span>
+    <span class="kw">LD</span> DE, <span class="num">#C001</span>
+    <span class="kw">LD</span> BC, <span class="num">#3FFF</span>
+    <span class="kw">LD</span> (HL), <span class="num">0</span>
+    <span class="kw">LDIR</span>                                       <span class="cmt">; залили page 10 нулями</span>
+    <span class="cmt">; повторить для #11, #12</span>
+</code></pre>
+
+<h2 id="palette">6. Палитра и FMaps</h2>
+<p>FMaps — специальная область памяти TS-Config для работы с графикой. При записи <code>#10</code> в порт <code>FMADDR</code> биты <code>#0000..#03FF</code> CPU-памяти переключаются на FMaps:</p>
+
+<svg class="svg-diagram" width="600" height="280" viewBox="0 0 600 280" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .box { fill: #2e3440; stroke: #88c0d0; stroke-width: 2; }
+    .box-cram { fill: #3b4252; stroke: #a3be8c; stroke-width: 2; }
+    .box-sfile { fill: #3b4252; stroke: #ebcb8b; stroke-width: 2; }
+    .box-regs { fill: #3b4252; stroke: #bf616a; stroke-width: 2; }
+    .lbl { fill: #d8dee9; font: 13px sans-serif; }
+    .lbl-h { fill: #88c0d0; font: 14px sans-serif; font-weight: 600; }
+    .addr { fill: #d08770; font: 12px monospace; }
+    .arrow { stroke: #88c0d0; stroke-width: 2; fill: none; marker-end: url(#a); }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#88c0d0"/>
+    </marker>
+  </defs>
+  <text x="20" y="25" class="lbl-h">CPU-память (slot 0)</text>
+  <text x="320" y="25" class="lbl-h">FMaps (при FM_EN=1)</text>
+
+  <rect x="20" y="40" width="240" height="200" class="box"/>
+  <text x="30" y="65" class="addr">#0000</text>
+  <text x="30" y="230" class="addr">#3FFF</text>
+  <text x="120" y="145" class="lbl">ROM Spectrum</text>
+  <text x="115" y="165" class="lbl" style="font-size: 11px; fill: #616e88;">(или RAM-страница если PAGE0 переключён)</text>
+
+  <rect x="320" y="40" width="240" height="55" class="box-cram"/>
+  <text x="330" y="65" class="addr">#0000–#01FF</text>
+  <text x="330" y="85" class="lbl">CRAM (палитра): 256×16-bit</text>
+
+  <rect x="320" y="100" width="240" height="80" class="box-sfile"/>
+  <text x="330" y="125" class="addr">#0200–#03FD</text>
+  <text x="330" y="145" class="lbl">SFILE (sprite descriptors):</text>
+  <text x="330" y="163" class="lbl" style="font-size: 12px;">85 шт × 6 байт = 510</text>
+
+  <rect x="320" y="185" width="240" height="55" class="box-regs"/>
+  <text x="330" y="210" class="addr">#03FE–#03FF</text>
+  <text x="330" y="228" class="lbl">port-mapped регистры (НЕ ПИСАТЬ!)</text>
+
+  <path d="M 270 70 Q 295 70 320 70" class="arrow"/>
+  <path d="M 270 130 Q 295 130 320 130" class="arrow"/>
+  <text x="280" y="55" class="lbl" style="font-size: 11px;">FM_EN</text>
+</svg>
+
+<h3>Включение FMaps</h3>
+<pre><code>    <span class="kw">LD</span> BC, FMADDR
+    <span class="kw">LD</span> A, <span class="num">%00010000</span>     <span class="cmt">; FM_EN бит 4</span>
+    <span class="kw">OUT</span> (C), A
+    <span class="cmt">; теперь #0000-#01FF = CRAM, #0200-#03FD = SFILE</span>
+    <span class="cmt">; ... писать в палитру / дескрипторы ...</span>
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">XOR</span> A : <span class="kw">OUT</span> (C), A   <span class="cmt">; выключить</span>
+</code></pre>
+
+<div class="callout danger">
+  <strong>⚠ ГРАБЛИ #1: FM_EN — write-only через CPU</strong><br>
+  Read из <code>#0200..#03FF</code> при FM_EN=ON отдаёт <strong>ROM Spectrum</strong>, не SFILE. Подробности и обходные пути — в разделе <a href="#gotchas">«Грабли»</a>.
+</div>
+
+<div class="callout danger">
+  <strong>⚠ ГРАБЛИ #2: IRQ во время FM_EN рушит память</strong><br>
+  При FM_EN=ON адрес <code>#0038</code> (target IM 1 interrupt) попадает <em>внутрь SFILE</em>. Если в этот момент сработает interrupt — CPU прыгает на байт descriptor'а и исполняет его как код. Память будет случайным образом перезаписана. <strong>Всегда</strong> отключайте interrupts при работе с FM_EN. Подробности — в разделе «Грабли».
+</div>
+
+<h3>Запись палитры в CRAM</h3>
+<p>Палитра — массив 256 16-битных цветов. Формат каждого цвета:</p>
+<pre><code><span class="cmt">; 16 бит: x|R5|G5|B5|brightness</span>
+<span class="cmt">; byte 0: GGGB BBBB</span>
+<span class="cmt">; byte 1: 1 RRRRR GG     (старший бит = яркость)</span>
+</code></pre>
+<p>Палитра делится на блоки по 16 цветов = 32 байта. SPAL=0 — байты #0000..#001F, SPAL=1 — #0020..#003F, и т. д. до SPAL=15 (#01E0..#01FF).</p>
+<pre><code>    <span class="kw">LD</span> BC, FMADDR : <span class="kw">LD</span> A, <span class="num">#10</span> : <span class="kw">OUT</span> (C), A
+    <span class="kw">LD</span> HL, MyPalette         <span class="cmt">; источник в RAM</span>
+    <span class="kw">LD</span> DE, <span class="num">#0000</span>             <span class="cmt">; цель в CRAM (SPAL=0)</span>
+    <span class="kw">LD</span> BC, <span class="num">32</span>                <span class="cmt">; 16 цветов × 2 байта</span>
+    <span class="kw">LDIR</span>
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">XOR</span> A : <span class="kw">OUT</span> (C), A
+</code></pre>
+<p>LDIR здесь работает потому, что source — в обычной RAM (а не в FMaps).</p>
+
+<h2 id="dma">7. DMA</h2>
+<p>DMA-контроллер копирует 16-битными порциями со скоростью 7 МБ/с. Используется для:</p>
+<ul>
+  <li>Очистки экрана (заливка значением).</li>
+  <li>Копирования спрайтов в видеопамять (с blitting / прозрачностью).</li>
+  <li>Копирования больших блоков данных между страницами.</li>
+</ul>
+
+<figure>
+  <img src="images/03-dma-nastroyki-tablitsa.png" alt="Таблица настроек DMA">
+  <figcaption>Биты управляющего регистра DMA — режим работы, blitter, source/dest pages.</figcaption>
+</figure>
+
+<h3>Универсальная процедура DMA-копирования</h3>
+<pre><code><span class="kw">dma_copy:</span>
+    <span class="kw">EX</span> AF, AF'
+    <span class="kw">LD</span> A, <span class="num">0</span>
+<span class="kw">pagefr</span> <span class="kw">EQU</span> $-1            <span class="cmt">; патчится перед вызовом</span>
+    <span class="kw">LD</span> BC, DMASADL : <span class="kw">OUT</span> (C), L
+    <span class="kw">INC</span> B : <span class="kw">OUT</span> (C), H       <span class="cmt">; DMASADH</span>
+    <span class="kw">INC</span> B : <span class="kw">OUT</span> (C), A       <span class="cmt">; DMASADX (страница)</span>
+
+    <span class="kw">LD</span> A, <span class="num">0</span>
+<span class="kw">pageto</span> <span class="kw">EQU</span> $-1
+    <span class="kw">INC</span> B : <span class="kw">OUT</span> (C), E       <span class="cmt">; DMADADL</span>
+    <span class="kw">INC</span> B : <span class="kw">OUT</span> (C), D       <span class="cmt">; DMADADH</span>
+    <span class="kw">INC</span> B : <span class="kw">OUT</span> (C), A       <span class="cmt">; DMADADX</span>
+
+    <span class="kw">LD</span> HL, <span class="num">0</span>
+<span class="kw">sizebc</span> <span class="kw">EQU</span> $-2
+    <span class="kw">LD</span> B, high DMALEN : <span class="kw">OUT</span> (C), H
+    <span class="kw">LD</span> B, high DMANUM : <span class="kw">OUT</span> (C), L
+
+    <span class="kw">EX</span> AF, AF'
+    <span class="kw">LD</span> B, high DMACTR : <span class="kw">OUT</span> (C), A   <span class="cmt">; запуск</span>
+<span class="kw">.wait:</span>
+    <span class="kw">IN</span> A, (C)
+    <span class="kw">RET</span> P                          <span class="cmt">; готово?</span>
+    <span class="kw">JR</span> .wait
+</code></pre>
+
+<h3>Режимы DMA</h3>
+<table>
+<tr><th>A =</th><th>Режим</th></tr>
+<tr><td><code>%00000100</code></td><td>Заливка (fill) — копирует 2 байта source во всю область dest</td></tr>
+<tr><td><code>%10110001</code></td><td>Blitting — прозрачность по индексу 0 (важно для спрайтов)</td></tr>
+<tr><td><code>%00110100</code></td><td>Копирование заданной области (X×Y) без blitting</td></tr>
+</table>
+
+<h3>Важно про размеры</h3>
+<p>DMA копирует <strong>2 байта за такт</strong>. В 16-цветном режиме (4bpp) это <strong>4 пикселя</strong>. Поэтому если хотите залить квадрат 16×8 пикселей в 16c — указывайте <code>B = 4</code> (вместо 16). А в 256-цветном — 8.</p>
+
+<h2 id="tsu-sprites">8. TSU — аппаратные спрайты</h2>
+<p>Видеопроцессор TSU умеет выводить до 85 спрайтов на экран одновременно, поверх битмап-слоя. Каждый спрайт — от 8×8 до 64×64, всегда 4bpp (16 цветов из выбранной палитры).</p>
+
+<figure>
+  <img src="images/04-tsu-spraytv-deskriptor.png" alt="Дескриптор TSU спрайта">
+  <figcaption>Структура TSU-дескриптора и его биты.</figcaption>
+</figure>
+
+<h3>Дескриптор спрайта — 6 БАЙТ</h3>
+<div class="callout danger">
+  <strong>⚠ ГРАБЛИ #3: stride descriptor = 6 БАЙТ, НЕ 8!</strong><br>
+  В оригинальной документации фраза «85 cells × 48 bit» легко пропустить. 48 бит = 6 байт. Если по привычке использовать арифметику <code>index × 8</code>, descriptors начнут перекрываться, и на экране появятся призрачные спрайты.
+</div>
+
+<svg class="svg-diagram" width="700" height="240" viewBox="0 0 700 240" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .desc-byte { stroke: #88c0d0; stroke-width: 1.5; fill: #2e3440; }
+    .desc-lbl  { fill: #d8dee9; font: 13px monospace; text-anchor: middle; }
+    .desc-name { fill: #a3be8c; font: 11px sans-serif; text-anchor: middle; }
+    .desc-bit  { fill: #d08770; font: 10px monospace; text-anchor: middle; }
+  </style>
+  <text x="350" y="20" style="fill:#88c0d0; font:14px sans-serif; text-anchor:middle; font-weight:600;">Sprite Descriptor (6 байт = 48 бит)</text>
+
+  <g transform="translate(20, 40)">
+    <!-- 6 boxes side by side -->
+    <rect x="0" y="0" width="105" height="60" class="desc-byte"/>
+    <text x="52" y="25" class="desc-lbl">byte 0</text>
+    <text x="52" y="45" class="desc-name">Y[7:0]</text>
+
+    <rect x="105" y="0" width="105" height="60" class="desc-byte"/>
+    <text x="157" y="25" class="desc-lbl">byte 1</text>
+    <text x="157" y="42" class="desc-name">YF·LEAP·ACT</text>
+    <text x="157" y="55" class="desc-name">·SIZ_Y·YH</text>
+
+    <rect x="210" y="0" width="105" height="60" class="desc-byte"/>
+    <text x="262" y="25" class="desc-lbl">byte 2</text>
+    <text x="262" y="45" class="desc-name">X[7:0]</text>
+
+    <rect x="315" y="0" width="105" height="60" class="desc-byte"/>
+    <text x="367" y="25" class="desc-lbl">byte 3</text>
+    <text x="367" y="42" class="desc-name">XF·_·_</text>
+    <text x="367" y="55" class="desc-name">·SIZ_X·XH</text>
+
+    <rect x="420" y="0" width="105" height="60" class="desc-byte"/>
+    <text x="472" y="25" class="desc-lbl">byte 4</text>
+    <text x="472" y="45" class="desc-name">TNUM[7:0]</text>
+
+    <rect x="525" y="0" width="105" height="60" class="desc-byte"/>
+    <text x="577" y="25" class="desc-lbl">byte 5</text>
+    <text x="577" y="42" class="desc-name">SPAL[3:0]</text>
+    <text x="577" y="55" class="desc-name">TNUM[11:8]</text>
+  </g>
+
+  <g transform="translate(20, 130)">
+    <text x="0" y="0" style="fill:#a3be8c; font:13px sans-serif; font-weight:600;">Биты byte 1:</text>
+    <text x="0" y="22" style="fill:#d8dee9; font:12px monospace;">7=Y-flip  6=LEAP  5=ACT  4–1=SIZE_Y  0=Y[8]</text>
+    <text x="0" y="44" style="fill:#d8dee9; font:12px monospace;">SIZE: 0=8px, 2=16px, 4=24px, 6=32px, 8=40px, A=48, C=56, E=64</text>
+    <text x="0" y="66" style="fill:#d8dee9; font:12px monospace;">SPLEAP=#40 — «последний спрайт в слое» (TSU переходит к след. слою)</text>
+    <text x="0" y="88" style="fill:#d8dee9; font:12px monospace;">SPACT=#20 — спрайт активен (включён)</text>
+  </g>
+</svg>
+
+<h3>Запись descriptor 0 (первый спрайт)</h3>
+<pre><code>    <span class="kw">LD</span> BC, FMADDR : <span class="kw">LD</span> A, <span class="num">#10</span> : <span class="kw">OUT</span> (C), A   <span class="cmt">; FM_EN ON</span>
+
+    <span class="kw">LD</span> HL, <span class="num">#0200</span>          <span class="cmt">; descriptor 0</span>
+    <span class="kw">LD</span> (HL), <span class="num">100</span>           <span class="cmt">; Y_L = 100</span>
+    <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), SPACT+SPSIZ16  <span class="cmt">; ACT=1, размер 16 по Y, YH=0</span>
+    <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), <span class="num">128</span>           <span class="cmt">; X_L = 128</span>
+    <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), SPSIZ16        <span class="cmt">; размер 16 по X, XH=0</span>
+    <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), <span class="num">0</span>             <span class="cmt">; TNUM_L = 0 (первый тайл)</span>
+    <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), <span class="num">#10</span>           <span class="cmt">; SPAL=1, TNUM[11:8]=0</span>
+
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">XOR</span> A : <span class="kw">OUT</span> (C), A   <span class="cmt">; FM_EN OFF</span>
+</code></pre>
+
+<h3>Адресация descriptor N</h3>
+<pre><code><span class="cmt">; descriptor N → #0200 + N×6</span>
+<span class="cmt">; Через регистры:  6×N = 2N×3 = (N+N+N)×2</span>
+    <span class="kw">LD</span> L, N : <span class="kw">LD</span> H, <span class="num">0</span>
+    <span class="kw">LD</span> D, H : <span class="kw">LD</span> E, L          <span class="cmt">; DE = N</span>
+    <span class="kw">ADD</span> HL, HL                 <span class="cmt">; 2N</span>
+    <span class="kw">ADD</span> HL, DE                 <span class="cmt">; 3N</span>
+    <span class="kw">ADD</span> HL, HL                 <span class="cmt">; 6N</span>
+    <span class="kw">LD</span> DE, <span class="num">#0200</span>
+    <span class="kw">ADD</span> HL, DE                 <span class="cmt">; HL = #0200 + 6×N</span>
+</code></pre>
+
+<h3>SGPAGE — где взять графику спрайтов</h3>
+<p>Регистр <code>SGPAGE</code> задаёт <em>стартовую</em> страницу графики спрайтов. TNUM — это 12-битный индекс «тайла» 8×8 в воображаемом «ковре» 4 страниц подряд:</p>
+<pre><code>SGPAGE = N    →    TNUM   <span class="num">0..511</span>     = page N
+                   TNUM <span class="num">512..1023</span>    = page N+1
+                   TNUM <span class="num">1024..1535</span>   = page N+2
+                   TNUM <span class="num">1536..2047</span>   = page N+3
+</code></pre>
+<p>То есть одна SGPAGE даёт доступ к 64 КБ графики, без переключений на лету.</p>
+
+<h3>Включение TSU</h3>
+<pre><code>    <span class="kw">LD</span> BC, TSCONFIG
+    <span class="kw">LD</span> A, <span class="num">%10100000</span>         <span class="cmt">; bit 7 = TSU спрайты, bit 5 = тайл-слой 0</span>
+    <span class="kw">OUT</span> (C), A
+</code></pre>
+<p>Бит 7 — все спрайтовые слои; бит 5 — тайл-слой 0; бит 6 — тайл-слой 1.</p>
+
+<h2 id="tsu-tiles">9. TSU — тайлы и фон</h2>
+<p>Тайлы 8×8 пикселей рисуются в двух слоях. Каждый тайл — 2 байта в карте:</p>
+<table>
+<tr><th>Биты</th><th>Назначение</th></tr>
+<tr><td>11–0</td><td>TNUM (номер тайла в графике)</td></tr>
+<tr><td>13–12</td><td>SPAL (0..3 — выбор палитры)</td></tr>
+<tr><td>14</td><td>Зеркало по X</td></tr>
+<tr><td>15</td><td>Зеркало по Y</td></tr>
+</table>
+
+<figure>
+  <img src="images/05-tsu-tayly-format.png" alt="Формат тайлов">
+  <figcaption>Раскладка тайлов и map-памяти (порт TMPAGE).</figcaption>
+</figure>
+
+<h3>Настройка</h3>
+<pre><code>    <span class="kw">LD</span> BC, T0GPAGE  : <span class="kw">LD</span> A, <span class="num">#C0</span> : <span class="kw">OUT</span> (C), A   <span class="cmt">; графика тайл-слоя 0</span>
+    <span class="kw">LD</span> BC, TMPAGE   : <span class="kw">LD</span> A, <span class="num">#08</span> : <span class="kw">OUT</span> (C), A   <span class="cmt">; карта тайлов</span>
+</code></pre>
+<p>В странице карты данные слоя T0 размещаются с <code>#C000</code>, слоя T1 — с <code>#C080</code>. Шаг между строками карты — 256 байт.</p>
+
+<h2 id="scroll">10. Скроллинг</h2>
+<p>Тайл-слои можно сдвигать на пиксельном уровне (диапазон 0..511 по X и Y). Порты:</p>
+<pre><code><span class="kw">T0XOFSL</span>/<span class="kw">T0XOFSH</span>  <span class="cmt">; offset слоя T0 по X (младший/старший байт)</span>
+<span class="kw">T0YOFSL</span>/<span class="kw">T0YOFSH</span>  <span class="cmt">; offset слоя T0 по Y</span>
+<span class="kw">T1XOFSL</span>/<span class="kw">T1XOFSH</span>  <span class="cmt">; для слоя T1</span>
+<span class="kw">T1YOFSL</span>/<span class="kw">T1YOFSH</span>
+</code></pre>
+<p>Спрайты не имеют отдельного скроллинга — для движения просто меняйте координаты в descriptor.</p>
+
+<h2 id="kempston">11. Клавиатура и мышь</h2>
+
+<h3>Клавиатура</h3>
+<p>Стандартное чтение портов <code>#xxFE</code>. Бит = 0 при нажатии:</p>
+<pre><code>    <span class="kw">LD</span> BC, <span class="num">#7FFE</span>          <span class="cmt">; ряд "B..SPACE"</span>
+    <span class="kw">IN</span> A, (C)
+    <span class="kw">BIT</span> <span class="num">0</span>, A             <span class="cmt">; SPACE</span>
+    <span class="kw">JR</span> Z, space_pressed
+</code></pre>
+
+<h3>Kempston Mouse</h3>
+<pre><code><span class="kw">MOUSE_X</span>   <span class="kw">EQU</span> <span class="num">#FBDF</span>   <span class="cmt">; X-счётчик (8 бит, относительный)</span>
+<span class="kw">MOUSE_Y</span>   <span class="kw">EQU</span> <span class="num">#FFDF</span>   <span class="cmt">; Y-счётчик</span>
+<span class="kw">MOUSE_BTN</span> <span class="kw">EQU</span> <span class="num">#FADF</span>   <span class="cmt">; кнопки</span>
+</code></pre>
+<p>Координаты — счётчики 8-bit, накапливаются в железе. Нужно считать <em>дельту</em> между кадрами:</p>
+<pre><code>    <span class="kw">LD</span> BC, MOUSE_X
+    <span class="kw">IN</span> A, (C)
+    <span class="kw">LD</span> HL, MouseXPrev
+    <span class="kw">LD</span> B, (HL)
+    <span class="kw">LD</span> (HL), A           <span class="cmt">; сохранили новое</span>
+    <span class="kw">SUB</span> B                <span class="cmt">; A = signed delta</span>
+</code></pre>
+
+<div class="callout warn">
+  <strong>⚠ ГРАБЛИ #4: биты кнопок мыши в Unreal Speccy не как в стандарте Kempston</strong><br>
+  Стандарт Kempston: бит 0 = правая, бит 1 = левая. Unreal Speccy: бит 0 = ЛКМ, бит 1 = ПКМ. Polarity нормальная (1 = нажата). Проверяйте на своём железе/эмуляторе!
+</div>
+
+<h3>Edge detection (1 нажатие = 1 действие)</h3>
+<pre><code>    <span class="kw">IN</span> A, (C)
+    <span class="kw">AND</span> <span class="num">%00000001</span>       <span class="cmt">; ЛКМ</span>
+    <span class="kw">LD</span> HL, MouseBtnPrev
+    <span class="kw">LD</span> B, (HL)
+    <span class="kw">LD</span> (HL), A
+    <span class="kw">OR</span> A
+    <span class="kw">JR</span> Z, .no_shot       <span class="cmt">; не нажата сейчас</span>
+    <span class="kw">LD</span> A, B
+    <span class="kw">OR</span> A
+    <span class="kw">JR</span> NZ, .no_shot      <span class="cmt">; была нажата в прошлом кадре</span>
+    <span class="kw">CALL</span> ShootBall       <span class="cmt">; чистый фронт 0→1</span>
+<span class="kw">.no_shot:</span>
+</code></pre>
+
+<h2 id="gotchas">12. Грабли — обязательно прочитать!</h2>
+<p>Этот раздел — концентрат опыта боевой разработки. Каждый пункт — день отладки в среднем.</p>
+
+<h3 id="g1">12.1. FM_EN — write-only через CPU</h3>
+<div class="callout danger">
+  <strong>Симптом:</strong> на экране появляются «призрачные» цветные прямоугольники, которые невозможно очистить.<br>
+  <strong>Причина:</strong> при FM_EN=ON чтение из <code>#0000..#03FF</code> отдаёт <strong>ROM Spectrum</strong>, не FMaps. Запись работает.
+</div>
+<p>Опаснейшее следствие: <strong>LDIR с source в SFILE копирует ROM-байты в SFILE</strong>:</p>
+<pre><code><span class="cmt">; ❌ НЕ РАБОТАЕТ — копирует ROM в SFILE!</span>
+    <span class="kw">LD</span> HL, <span class="num">#0200</span>
+    <span class="kw">LD</span> (HL), <span class="num">0</span>
+    <span class="kw">LD</span> DE, <span class="num">#0201</span>
+    <span class="kw">LD</span> BC, <span class="num">509</span>
+    <span class="kw">LDIR</span>
+</code></pre>
+<p>На каждой итерации LDIR делает <code>read (HL)</code> — а это чтение из ROM-таблицы ключевых слов BASIC ('COPY' = <code>43 4F 50 D9</code>, 'POINTS', 'SCREEN', ...). Многие байты этих строк имеют bit 5 = 1, что в SFILE интерпретируется как <strong>ACT=1</strong>. Десятки descriptors получают мусорные координаты и графику. Призраки на экране.</p>
+<p><strong>Правильно:</strong> immediate writes через DJNZ:</p>
+<pre><code>    <span class="kw">LD</span> BC, FMADDR : <span class="kw">LD</span> A, <span class="num">#10</span> : <span class="kw">OUT</span> (C), A
+    <span class="kw">LD</span> HL, <span class="num">#0200</span>
+    <span class="kw">LD</span> B, <span class="num">255</span>
+<span class="kw">.l1:</span> <span class="kw">LD</span> (HL), <span class="num">0</span> : <span class="kw">INC</span> HL : <span class="kw">DJNZ</span> .l1
+    <span class="kw">LD</span> B, <span class="num">255</span>
+<span class="kw">.l2:</span> <span class="kw">LD</span> (HL), <span class="num">0</span> : <span class="kw">INC</span> HL : <span class="kw">DJNZ</span> .l2   <span class="cmt">; всего 510 байт</span>
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">XOR</span> A : <span class="kw">OUT</span> (C), A
+</code></pre>
+
+<h3 id="g2">12.2. IRQ во время FM_EN рушит память</h3>
+<div class="callout danger">
+  <strong>Симптом:</strong> переменные программы получают значения, похожие на адреса (FrogX = <code>#C001</code>) или код (KeySpacePrev = <code>#AF</code>). Программа работает «через раз».<br>
+  <strong>Причина:</strong> при FM_EN=ON <code>#0038</code> — это байт ВНУТРИ SFILE. Если в этот момент сработает interrupt в IM 1, CPU прыгает на этот байт и исполняет его как код.
+</div>
+<p>Простейшее лечение — обернуть весь main loop в DI, EI ставить только перед HALT:</p>
+<pre><code><span class="kw">MainLoop:</span>
+    <span class="kw">EI</span>                 <span class="cmt">; разрешить IRQ только для HALT</span>
+    <span class="kw">HALT</span>               <span class="cmt">; ждём vsync</span>
+    <span class="kw">DI</span>                 <span class="cmt">; на весь кадр interrupts off</span>
+    <span class="kw">CALL</span> ...логика...
+    <span class="kw">JP</span> MainLoop
+</code></pre>
+<p>Альтернатива — DI/EI прямо перед каждым <code>OUT FMADDR, #10</code>.</p>
+
+<h3 id="g3">12.3. Stride descriptor = 6 байт</h3>
+<div class="callout danger">
+  <strong>Симптом:</strong> ставите 16 шаров — на экране 30 разноцветных квадратов в случайных местах.<br>
+  <strong>Причина:</strong> вы используете <code>index × 8</code> для адресации descriptor. Каждый «слот шара» гадит в <em>два</em> настоящих descriptors.
+</div>
+<p>Правильный stride — 6 байт, 85 descriptors суммарно. Проверка адресной арифметики на бумаге обязательна.</p>
+
+<h3 id="g4">12.4. TSU и ACT=0 в начале списка</h3>
+<div class="callout warn">
+  <strong>Наблюдение (требует подтверждения автором железа):</strong> TSU, похоже, перестаёт рендерить descriptors после первого с ACT=0 в текущем слое. Если у вас «жаба → 30 пустых descriptors → курсор», курсор будет невидим.<br>
+  <strong>Лечение:</strong> размещайте активные descriptors подряд без пропусков. В Zuma я расположил так: жаба #0200, курсор #0206 (сразу после жабы), шары #020C..#02CB.
+</div>
+
+<h3 id="g5">12.5. Размер descriptor != размер data structure</h3>
+<p>В моей структуре <code>BallTable</code> каждая запись — 8 байт (X 2, Y 2, ang 1, spd 1, act 1, color 1). Это удобно для индексации через IX. Но в SFILE descriptor — 6 байт. Не путайте: stride struct ≠ stride descriptor.</p>
+
+<h3 id="g6">12.6. Полная чистка SFILE — обязательна на старте</h3>
+<p>После reset RAM содержит мусор. Если не очистить SFILE — будете долго удивляться странным descriptors с ACT=1, рендерящимся неизвестно где. Чистите 510 байт <code>#0200..#03FD</code> в InitGame.</p>
+
+<h3 id="g7">12.7. Не писать за #03FD</h3>
+<p>SFILE = 510 байт = <code>#0200..#03FD</code>. Дальше идут port-mapped регистры TS-Config (адресуемые через <code>#nnAF</code>). Запись туда вызывает «Illegal port OUT» в эмуляторе и непредсказуемое поведение на железе.</p>
+
+<h3 id="g8">12.8. UpdateBallSprites — обновлять ВСЕ слоты</h3>
+<p>Соблазн: пропустить неактивные шары для скорости. Опасность: descriptor неактивного шара остаётся со старыми данными (если не очищен в момент удаления). Лучше: писать descriptor для каждого слота каждый кадр (активный → данные шара, неактивный → 6 нулей). Это гарантия от stale-state и стоит совсем недорого.</p>
+
+<h3 id="g9">12.9. Биты Kempston Mouse в Unreal Speccy</h3>
+<p>В Unreal Speccy: <strong>бит 0 = ЛКМ</strong>, бит 1 = ПКМ. На реальном железе и в стандарте Kempston — наоборот. Если стрельба «не работает с мыши» — попробуйте поменять бит.</p>
+
+<h2 id="layout">13. Раскладка SFILE на практике</h2>
+<p>Из опыта Zuma — рабочая раскладка:</p>
+
+<svg class="svg-diagram" width="700" height="200" viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .layout-box { stroke: #88c0d0; stroke-width: 1; }
+    .layout-frog { fill: #5e81ac; }
+    .layout-cursor { fill: #a3be8c; }
+    .layout-balls { fill: #d08770; }
+    .layout-empty { fill: #3b4252; }
+    .layout-lbl { fill: #eceff4; font: 12px sans-serif; text-anchor: middle; font-weight: 600; }
+    .layout-addr { fill: #d8dee9; font: 11px monospace; text-anchor: middle; }
+  </style>
+  <text x="350" y="20" style="fill:#88c0d0; font:14px sans-serif; text-anchor:middle; font-weight:600;">SFILE Layout (510 байт = 85 descriptors × 6)</text>
+
+  <rect x="20" y="40" width="50" height="80" class="layout-box layout-frog"/>
+  <text x="45" y="75" class="layout-lbl">Жаба</text>
+  <text x="45" y="92" class="layout-lbl" style="font-size:10px;">32×32</text>
+  <text x="45" y="135" class="layout-addr">#0200</text>
+  <text x="45" y="150" class="layout-addr" style="font-size:10px;">desc 0</text>
+
+  <rect x="70" y="40" width="50" height="80" class="layout-box layout-cursor"/>
+  <text x="95" y="75" class="layout-lbl">Курсор</text>
+  <text x="95" y="92" class="layout-lbl" style="font-size:10px;">16×16</text>
+  <text x="95" y="135" class="layout-addr">#0206</text>
+  <text x="95" y="150" class="layout-addr" style="font-size:10px;">desc 1</text>
+
+  <rect x="120" y="40" width="200" height="80" class="layout-box layout-balls"/>
+  <text x="220" y="75" class="layout-lbl">32 шара (16×16)</text>
+  <text x="220" y="92" class="layout-lbl" style="font-size:10px;">descriptors 2..33</text>
+  <text x="220" y="135" class="layout-addr">#020C..#02CB</text>
+
+  <rect x="320" y="40" width="350" height="80" class="layout-box layout-empty"/>
+  <text x="495" y="75" class="layout-lbl">обнулённые descriptors</text>
+  <text x="495" y="92" class="layout-lbl" style="font-size:10px;">ACT=0, не рендерятся</text>
+  <text x="495" y="135" class="layout-addr">#02CC..#03FD</text>
+  <text x="495" y="150" class="layout-addr" style="font-size:10px;">desc 34..84</text>
+</svg>
+
+<p>Ключевое — курсор <strong>сразу за жабой</strong>, перед шарами. TSU перестаёт рендерить на первом ACT=0 — поэтому если курсор отнести в descriptor 44 (как сделал я в первой версии), он не виден за «дырой» неактивных шаров.</p>
+
+<h2 id="convert">14. Конвертация графики 4bpp</h2>
+<p>Для 4bpp (16 цветов) в page TS-Config используется такая раскладка:</p>
+<pre><code>addr_in_page = tnum_y × <span class="num">2048</span> + ycnt × <span class="num">256</span> + tnum_x × <span class="num">4</span> + bsel
+</code></pre>
+<p>где:</p>
+<ul>
+  <li><code>tnum_y</code> = 0..7 (8 строк tile-rows, каждая высотой 8 пикселей)</li>
+  <li><code>ycnt</code> = 0..7 (строка пикселя внутри tile)</li>
+  <li><code>tnum_x</code> = 0..63 (64 тайла в ширину = 512 пикселей)</li>
+  <li><code>bsel</code> = 0..3 (по 2 пикселя на байт, всего 4 байта на 8-пиксельный тайл по X)</li>
+  <li>Старшая четвёрка байта = чётный пиксель, младшая = нечётный</li>
+</ul>
+<p>Минимальный Python-конвертер для 16×16 спрайта:</p>
+<pre><code><span class="kw">from</span> PIL <span class="kw">import</span> Image
+img = Image.<span class="str">open</span>(<span class="str">"sprite.png"</span>).convert(<span class="str">"P"</span>, palette=Image.ADAPTIVE, colors=<span class="num">16</span>)
+
+gfx = bytearray(<span class="num">4096</span>)
+<span class="kw">for</span> py <span class="kw">in</span> range(<span class="num">16</span>):
+    tnum_y, ycnt = py // <span class="num">8</span>, py % <span class="num">8</span>
+    <span class="kw">for</span> px <span class="kw">in</span> range(<span class="num">16</span>):
+        tnum_x = px // <span class="num">8</span>
+        bsel = (px % <span class="num">8</span>) // <span class="num">2</span>
+        nibble = px % <span class="num">2</span>
+        idx = img.getpixel((px, py))
+        addr = tnum_y * <span class="num">2048</span> + ycnt * <span class="num">256</span> + tnum_x * <span class="num">4</span> + bsel
+        <span class="kw">if</span> nibble == <span class="num">0</span>:
+            gfx[addr] = (gfx[addr] & <span class="num">0x0F</span>) | ((idx & <span class="num">0xF</span>) &lt;&lt; <span class="num">4</span>)
+        <span class="kw">else</span>:
+            gfx[addr] = (gfx[addr] & <span class="num">0xF0</span>) | (idx & <span class="num">0xF</span>)
+</code></pre>
+
+<h2 id="zuma">15. Zuma как пример</h2>
+<p>Ниже — критичные фрагменты из реальной игры (~1200 строк Z80), собранные по темам этого учебника. Они иллюстрируют то, что обсуждалось выше, и сами по себе работоспособны — копируйте, адаптируйте.</p>
+
+<figure>
+  <img src="images/07-zuma-sprite-anim.gif" alt="Анимация спрайта">
+  <figcaption>Пример анимации TSU-спрайта (из оригинальной документации).</figcaption>
+</figure>
+
+<h3 id="zuma-frog">15.1. Анимированный спрайт 32×32 (жаба, 32 кадра)</h3>
+<p>Атлас разложен в две горизонтальные полосы по 16 кадров (каждый кадр — 32×32 пикселя, занимает блок 4×4 тайла), SGPAGE=6, SPAL=0. Кадр выбирается по углу:</p>
+<pre><code><span class="kw">UpdateFrogSprite:</span>
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">LD</span> A, FM_EN : <span class="kw">OUT</span> (C), A
+    <span class="kw">LD</span> HL, <span class="num">#0200</span>                   <span class="cmt">; descriptor 0 — жаба</span>
+
+    <span class="kw">LD</span> DE, (FrogY)
+    <span class="kw">LD</span> (HL), E : <span class="kw">INC</span> HL              <span class="cmt">; Y_L</span>
+    <span class="kw">LD</span> (HL), %<span class="num">00100110</span> : <span class="kw">INC</span> HL       <span class="cmt">; Y flags: ACT + SIZE32 (Y_H бит =0)</span>
+
+    <span class="kw">LD</span> DE, (FrogX)
+    <span class="kw">LD</span> (HL), E : <span class="kw">INC</span> HL              <span class="cmt">; X_L</span>
+    <span class="kw">LD</span> A, D : <span class="kw">AND</span> <span class="num">1</span> : <span class="kw">OR</span> %<span class="num">00000110</span>
+    <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL              <span class="cmt">; X flags + SIZE32</span>
+
+    <span class="cmt">; Кадр анимации: N = ((FrogAngle - 64) &amp; 0xFF) >> 3   ; 0..31</span>
+    <span class="cmt">; TNUM = (N>>4)*256 + (N&amp;15)*4   ; 16 кадров на полосу, 4 тайла на кадр</span>
+    <span class="kw">LD</span> A, (FrogAngle)
+    <span class="kw">SUB</span> <span class="num">64</span>                          <span class="cmt">; кадр 0 — юг (FrogAngle=64)</span>
+    <span class="kw">SRL</span> A : <span class="kw">SRL</span> A : <span class="kw">SRL</span> A           <span class="cmt">; A = N (0..31)</span>
+    <span class="kw">LD</span> D, A
+    <span class="kw">SRL</span> A : <span class="kw">SRL</span> A : <span class="kw">SRL</span> A : <span class="kw">SRL</span> A   <span class="cmt">; A = N>>4 (TNUM_H, 0 или 1)</span>
+    <span class="kw">LD</span> E, A
+    <span class="kw">LD</span> A, D : <span class="kw">AND</span> <span class="num">#0F</span>               <span class="cmt">; A = N&amp;15</span>
+    <span class="kw">ADD</span> A, A : <span class="kw">ADD</span> A, A             <span class="cmt">; A = (N&amp;15)*4 = TNUM_L</span>
+    <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> A, E : <span class="kw">LD</span> (HL), A             <span class="cmt">; SPAL=0 (старшая тетрада) + TNUM_H</span>
+
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">XOR</span> A : <span class="kw">OUT</span> (C), A
+    <span class="kw">RET</span>
+</code></pre>
+
+<h3 id="zuma-mouse">15.2. Kempston Mouse + edge detection ЛКМ</h3>
+<p>Kempston-счётчики X/Y — 8-bit относительные. Дельту берём через <code>SUB prev</code>, накапливаем в 16-bit абсолют, кламп по краям экрана. Y инвертируем (Kempston: вверх = +). Для выстрела — нарастающий фронт через <code>MouseBtnPrev</code>:</p>
+<pre><code>    <span class="cmt">; --- ЛКМ: edge detection (нажата сейчас, не была в прошлом кадре) ---</span>
+    <span class="cmt">; В Unreal Speccy ЛКМ сидит в БИТЕ 0 порта #FADF (а не в бите 1 как стандарт!),</span>
+    <span class="cmt">; polarity нормальная (1 = нажата).</span>
+    <span class="kw">LD</span> BC, MOUSE_BTN
+    <span class="kw">IN</span> A, (C)
+    <span class="kw">AND</span> %<span class="num">00000001</span>
+    <span class="kw">LD</span> HL, MouseBtnPrev
+    <span class="kw">LD</span> B, (HL)
+    <span class="kw">LD</span> (HL), A
+    <span class="kw">OR</span> A
+    <span class="kw">JR</span> Z, .no_shot          <span class="cmt">; ЛКМ не нажата</span>
+    <span class="kw">LD</span> A, B
+    <span class="kw">OR</span> A
+    <span class="kw">JR</span> NZ, .no_shot         <span class="cmt">; уже была нажата → не первый кадр</span>
+    <span class="kw">CALL</span> ShootBall          <span class="cmt">; ровно один выстрел на нажатие</span>
+.no_shot:
+</code></pre>
+
+<h3 id="zuma-hyst">15.3. Угол с гистерезисом (плавное следование)</h3>
+<p>Перевод <code>(dx,dy) → угол</code> через октанты + <code>AtanTable</code> описан в книжках по векторной математике; ниже — только финальный гибридный апдейт <code>FrogAngle</code>: большой скачок применяется как есть, маленький (1..3 unit) сглаживается шагом ±1. Это убивает дёрганье на дискретных пикселях курсора.</p>
+<pre><code>.store:                       <span class="cmt">; A = новый угол; C = max(|dx|,|dy|)</span>
+    <span class="kw">LD</span> B, A                  <span class="cmt">; B = new</span>
+    <span class="kw">LD</span> A, C
+    <span class="kw">CP</span> <span class="num">5</span>
+    <span class="kw">JR</span> C, .done              <span class="cmt">; deadzone: курсор слишком близко</span>
+    <span class="kw">LD</span> A, B
+    <span class="kw">LD</span> HL, FrogAngle
+    <span class="kw">SUB</span> (HL)                 <span class="cmt">; A = signed (new - old) (8-bit wrap)</span>
+    <span class="kw">JR</span> Z, .done
+    <span class="kw">LD</span> D, A                  <span class="cmt">; запомним знак</span>
+    <span class="kw">BIT</span> <span class="num">7</span>, A
+    <span class="kw">JR</span> Z, .pos
+    <span class="kw">NEG</span>                       <span class="cmt">; A = |diff|</span>
+.pos:
+    <span class="kw">CP</span> <span class="num">4</span>
+    <span class="kw">JR</span> NC, .full             <span class="cmt">; крупный сдвиг → присваиваем new</span>
+    <span class="kw">LD</span> A, (HL)
+    <span class="kw">BIT</span> <span class="num">7</span>, D
+    <span class="kw">JR</span> NZ, .dec
+    <span class="kw">INC</span> A : <span class="kw">JR</span> .save         <span class="cmt">; шаг +1</span>
+.dec:
+    <span class="kw">DEC</span> A
+.save:
+    <span class="kw">LD</span> (HL), A
+    <span class="kw">RET</span>
+.full:
+    <span class="kw">LD</span> (HL), B
+.done:
+    <span class="kw">RET</span>
+</code></pre>
+
+<h3 id="zuma-balls">15.4. 32 шара через одну descriptor-таблицу</h3>
+<p>Структура шара (8 байт: X16, Y16, angle, speed, active, color) живёт в RAM, а descriptor TSU собирается каждый кадр. Адресная арифметика — stride 6 байт:</p>
+<pre><code><span class="kw">UpdateBallSprite:</span>           <span class="cmt">; C = 1..32 (номер шара), IX = ptr на BallTable[C-1]</span>
+    <span class="cmt">; HL = #020C + 6*(C-1)   ; #020C — descriptor 2, шары начинаются здесь</span>
+    <span class="kw">LD</span> A, C : <span class="kw">DEC</span> A
+    <span class="kw">LD</span> L, A : <span class="kw">LD</span> H, <span class="num">0</span>
+    <span class="kw">LD</span> D, H : <span class="kw">LD</span> E, L
+    <span class="kw">ADD</span> HL, HL                <span class="cmt">; *2</span>
+    <span class="kw">ADD</span> HL, DE                <span class="cmt">; *3</span>
+    <span class="kw">ADD</span> HL, HL                <span class="cmt">; *6</span>
+    <span class="kw">LD</span> DE, <span class="num">#020C</span>
+    <span class="kw">ADD</span> HL, DE                <span class="cmt">; HL = адрес descriptor для этого шара</span>
+
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">LD</span> A, FM_EN : <span class="kw">OUT</span> (C), A
+
+    <span class="kw">LD</span> A, (IX+BALL_ACTIVE)
+    <span class="kw">OR</span> A
+    <span class="kw">JR</span> Z, .clear              <span class="cmt">; неактивен → 6 нулей (ACT=0)</span>
+
+    <span class="cmt">; ... обычная запись descriptor (Y, Yflags+ACT+SIZE16, X, Xflags+SIZE16, TNUM_L, TNUM_H+SPAL) ...</span>
+    <span class="kw">JR</span> .done
+
+.clear:
+    <span class="kw">XOR</span> A
+    <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> (HL), A
+.done:
+    <span class="kw">LD</span> BC, FMADDR : <span class="kw">XOR</span> A : <span class="kw">OUT</span> (C), A
+    <span class="kw">RET</span>
+</code></pre>
+<p>Ключевая идея — <strong>пишем descriptor для всех 32 слотов каждый кадр</strong> (см. 12.8), активные → данные шара, неактивные → 6 нулей. Никакого stale-state.</p>
+
+<p>Что в этом примере собрано вместе:</p>
+<ul>
+  <li>Загрузка спрайта 32×32 в 32 кадрах анимации (15.1).</li>
+  <li>Чтение Kempston Mouse + edge detection ЛКМ (15.2).</li>
+  <li>Управление по углу с гистерезисом — плавный поворот (15.3).</li>
+  <li>32 динамических шара через одну descriptor-таблицу (15.4).</li>
+  <li>Спавн/удаление спрайтов с очисткой descriptors (см. <code>.clear</code> в 15.4).</li>
+  <li>Все грабли из раздела 12 — обойдены.</li>
+</ul>
+
+<h2 id="advanced">16. Продвинутые техники (на примере Zuma)</h2>
+<p>Эти приёмы выкристаллизовались по ходу разработки и решают конкретные проблемы которые встречаются при реальном программировании.</p>
+
+<h3 id="im2-fixed-timestep">16.1. IM 2 + Fixed Timestep — стабильная физика при тяжёлом рендере</h3>
+<p>Если main loop делает большие DMA-blit'ы (десятки шаров — 60+ DMA-операций за кадр), один кадр может выйти за 20мс. Тогда game speed падает: летящие шары "тормозят", цепочка двигается рывками.</p>
+<p>Решение из геймдева — Fixed Timestep. Прерывание (vsync IRQ) только инкрементирует тик-счётчик, а MainLoop "догоняет" логику отдельно от рендера.</p>
+
+<p><b>Setup IM 2 на TS-Conf:</b> Frame IRQ peripheral возвращает data byte <code>#FF</code>. Vector_address = (I&lt;&lt;8) | data. Кладём 2 байта (адрес ISR'а) в произвольное место RAM (например, пустой кусок page 5):</p>
+<pre><code>    <span class="cmt">; Init: записать ISR-адрес в #5EFF/#5F00 (= в нашей же page 5)</span>
+    <span class="kw">LD</span> A, <span class="kw">LOW</span>(IRQHandler)
+    <span class="kw">LD</span> (<span class="num">#5EFF</span>), A
+    <span class="kw">LD</span> A, <span class="kw">HIGH</span>(IRQHandler)
+    <span class="kw">LD</span> (<span class="num">#5F00</span>), A
+    <span class="kw">LD</span> A, <span class="num">#5E</span>
+    <span class="kw">LD</span> I, A                        <span class="cmt">; I*256+#FF = #5EFF</span>
+    <span class="kw">IM</span> 2
+    <span class="kw">LD</span> BC, INTMASK : <span class="kw">LD</span> A, <span class="num">#01</span> : <span class="kw">OUT</span> (C), A   <span class="cmt">; INTMSKF — только frame IRQ</span>
+    <span class="kw">EI</span>
+
+<span class="kw">IRQHandler:</span>
+    <span class="kw">PUSH</span> AF
+    <span class="kw">LD</span> A, (TickCount)
+    <span class="kw">INC</span> A
+    <span class="kw">LD</span> (TickCount), A
+    <span class="kw">POP</span> AF
+    <span class="kw">EI</span>
+    <span class="kw">RETI</span>
+</code></pre>
+
+<p><b>MainLoop:</b></p>
+<pre><code><span class="kw">MainLoop:</span>
+    <span class="kw">DI</span>
+    <span class="kw">LD</span> A, (TickCount)
+    <span class="kw">LD</span> B, A
+    <span class="kw">LD</span> A, (ProcessedTicks)
+    <span class="kw">EI</span>
+    <span class="kw">CP</span> B
+    <span class="kw">JR</span> Z, .render            <span class="cmt">; догнали — рисуем</span>
+    <span class="kw">CALL</span> UpdateGame         <span class="cmt">; шаг логики (= 20мс игрового времени)</span>
+    <span class="kw">LD</span> HL, ProcessedTicks
+    <span class="kw">INC</span> (HL)
+    <span class="kw">JR</span> MainLoop
+.render:
+    <span class="kw">CALL</span> RenderFrame        <span class="cmt">; swap + sprites + DMA blit</span>
+    <span class="kw">HALT</span>                    <span class="cmt">; сон до следующего IRQ</span>
+    <span class="kw">JR</span> MainLoop
+</code></pre>
+<p>Если рендер занял больше 20мс (= один или несколько IRQ срабатывало во время него), MainLoop увидит <code>TickCount &gt; ProcessedTicks</code> и выполнит <code>UpdateGame</code> несколько раз подряд, наверстав игровое время. Визуально игра будет рендерить с просадкой fps, но скорость физики останется константной (50 Hz).</p>
+<p><b>Атомарность.</b> Логика и рендер целиком в MainLoop, ISR трогает только TickCount → нет race conditions, не нужны <code>DI/EI</code> вокруг чтения координат. Это ключевое отличие от наивного "переноса логики в IRQ".</p>
+
+<h3 id="dma-xy-granularity">16.2. DMA X×2 / Y×1 granularity — двойной спрайт</h3>
+<p>TS-Conf DMA blit имеет <b>2-pixel granularity по X</b> и 1-pixel по Y. Шар, нарисованный на нечётной X-координате, "снапается" к чётной — при движении по кривой это выглядит как шатание на 1px поперёк траектории.</p>
+<p><b>Workaround Сергея Слободчикова</b> — два варианта спрайта на каждый цвет:</p>
+<ul>
+  <li><b>even</b>: ball на col 0..(BALL_PIX-1), col BALL_PIX..(BALL_PIX+1) = pad нулями (transparent под BLT1).</li>
+  <li><b>odd</b>: col 0 = transparent (1px пэд), ball сдвинут на +1 px вправо (col 1..BALL_PIX), col BALL_PIX+1 = pad.</li>
+</ul>
+<p>Спрайты хранятся в отдельных страницах: <code>BALLS_DMA_EVEN_PAGE</code>, <code>BALLS_DMA_ODD_PAGE</code>.</p>
+<p><b>В коде blit:</b></p>
+<pre><code>    <span class="cmt">; X & #FE → dst_X (всегда чётный, безболезненный для DMA snap),</span>
+    <span class="cmt">; bit 0 X → выбор even/odd-страницы спрайта.</span>
+    <span class="kw">LD</span> A, (TmpChainX)
+    <span class="kw">LD</span> B, A
+    <span class="kw">AND</span> <span class="num">1</span>
+    <span class="kw">LD</span> (BcsXOdd), A
+    <span class="kw">LD</span> A, B
+    <span class="kw">AND</span> <span class="num">#FE</span>
+    <span class="kw">LD</span> (BcsDstLow), A      <span class="cmt">; чётный X</span>
+    <span class="cmt">; ... затем выбор страницы:</span>
+    <span class="kw">LD</span> A, (BcsXOdd)
+    <span class="kw">OR</span> A
+    <span class="kw">JR</span> Z, .even
+    <span class="kw">LD</span> A, BALLS_DMA_ODD_PAGE
+    <span class="kw">JR</span> .have
+.even:
+    <span class="kw">LD</span> A, BALLS_DMA_EVEN_PAGE
+.have:
+    <span class="kw">ADD</span> A, B               <span class="cmt">; + color (где B = индекс цвета)</span>
+    <span class="kw">LD</span> BC, DMASADX : <span class="kw">OUT</span> (C), A
+</code></pre>
+<p>DMA копирует <code>BALL_PIX/2</code> word'ов (не <code>(BALL_PIX+2)/2</code>) — последний пиксель odd-варианта обрезается, но он на edge'е circular-mask и обычно прозрачный. Цена: ×2 памяти на спрайты, +0% DMA-нагрузки.</p>
+
+<h3 id="vdc-model">16.3. VDC модель цепочки — дискретные slots с виртуальным движением</h3>
+<p>Прямая физика "шарики толкают друг друга" на Z80 слишком тяжёлая (тысячи операций × 60 шаров × 50 Hz). Альтернатива — <b>VDC (Virtual Discrete Chain)</b>: цепочка хранится как массив <code>Slots[]</code> цветов, позиция шара i вычисляется по треку:</p>
+<pre><code>t_i = (HSA - i) * CELL_SIZE + HSub + SlotOffsets[i]
+TrackData[t_i] → (X, Y) для blit'а
+</code></pre>
+<p>где <code>HSA</code> — head slot abs (= позиция головного шара по дискретному треку, шаг 32px), <code>HSub</code> — sub-cell offset 0..31 (плавное движение), <code>SlotOffsets[i]</code> — signed дельта для smooth match-3 анимации.</p>
+<p>Преимущества: O(1) для движения цепочки (просто <code>HSub++</code>), O(1) для insert (shift_right), O(N) для match-3 detection (window-3 scan).</p>
+
+<h4>Match-3 без выстрела — anti-3-in-row spawn-guard</h4>
+<p>Если spawn ставит шар в tail и случайно делает 3-в-ряд того же цвета, match-3 сработает "без выстрела". Игроку выглядит как баг.</p>
+<p>Решение: при spawn'е проверять последние два слота, если совпадают с кандидатом — bumpнуть цвет:</p>
+<pre><code>    <span class="cmt">; A = candidate color (= NextChainColor от LFSR)</span>
+    <span class="kw">LD</span> B, A
+    <span class="kw">LD</span> A, (Chain0_SlotsLen)
+    <span class="kw">CP</span> <span class="num">2</span>
+    <span class="kw">JR</span> C, .no_avoid
+    <span class="cmt">; Slots[len-1] == Slots[len-2]?</span>
+    <span class="kw">PUSH</span> HL
+    <span class="kw">DEC</span> HL : <span class="kw">LD</span> A, (HL)
+    <span class="kw">DEC</span> HL : <span class="kw">CP</span> (HL)
+    <span class="kw">JR</span> NZ, .done                      <span class="cmt">; разные → safe</span>
+    <span class="kw">CP</span> B
+    <span class="kw">JR</span> NZ, .done                      <span class="cmt">; candidate уже отличается</span>
+    <span class="cmt">; bump: candidate = (candidate+1) mod NUM_BALL_COLORS</span>
+    <span class="kw">LD</span> A, B : <span class="kw">INC</span> A
+    <span class="kw">CP</span> NUM_BALL_COLORS
+    <span class="kw">JR</span> C, .store
+    <span class="kw">XOR</span> A
+.store:
+    <span class="kw">LD</span> B, A
+.done:
+    <span class="kw">POP</span> HL
+.no_avoid:
+    <span class="kw">LD</span> A, B
+    <span class="kw">LD</span> (HL), A                       <span class="cmt">; Slots[len] = guarded color</span>
+</code></pre>
+<p>При <code>NUM_BALL_COLORS=1</code> guard no-op (match неизбежен — это level-loss). На последних уровнях Zuma HD остаётся 2 цвета — guard критичен для 0% spawn-match'ей.</p>
+
+<h4>Cascade combo — Shot2 markers и hybrid scan</h4>
+<p>После match-3 (от выстрела) на месте сматченных шаров появляются <b>GAP-markers</b> (виртуальные cells), которые потом плавно "схлопываются": GAP_STOP двигается к tail, GAP_CASCADE — к head. После закрытия GAP'а оставшиеся шары сдвигаются и могут сложить новый 3-в-ряд → cascade combo.</p>
+<p>Чтобы триггерить combo <i>детерминированно</i>, при apply match-3 ставим <b>Shot2-маркеры</b> на двух соседях GAP-блока:</p>
+<pre><code>    <span class="cmt">; В CheckMatch3 после установки Slots[lb..rb] = GAP-marker:</span>
+    <span class="kw">LD</span> A, (TmpMatchLeft)
+    <span class="kw">OR</span> A : <span class="kw">JR</span> Z, .no_left          <span class="cmt">; lb=0 → нет соседа слева</span>
+    <span class="kw">DEC</span> A
+    <span class="kw">LD</span> H, <span class="num">0</span> : <span class="kw">LD</span> L, A : <span class="kw">LD</span> DE, Chain0_Shot2 : <span class="kw">ADD</span> HL, DE
+    <span class="kw">LD</span> (HL), <span class="num">1</span>                       <span class="cmt">; Shot2[lb-1] = 1</span>
+.no_left:
+    <span class="cmt">; аналогично для Shot2[rb+1]</span>
+</code></pre>
+<p>В <code>DoGapStep</code> (где shift_left для GAP closure) Shot2-массив шифтится параллельно со Slots/Offsets — маркеры "следуют" за своими шарами.</p>
+<p>После каждого close'а триггерим <code>ScanForNewMatch</code> только по Shot2-маркерам (Phase 1). Каждый маркер — это <code>CheckMatch3(k)</code>. Если 3-в-ряд → match. Если нет — маркер не очищается, пока offsets возле k не settled (=0): match может ждать пока шары визуально съедутся (см. <code>DM3_OFFSET_GAP_MAX</code>).</p>
+<p>Раннее у нас был fallback Phase 2 (full-chain window-3 scan). От него отказались — он давал «ложные» match'и без выстрела. Cascade combos сохраняются через Phase 1: <code>DoGapStep</code> при shift_left ставит Shot2[K-1]=1 и Shot2[K]=1 на compaction-site, и следующий scan их подхватывает.</p>
+
+<h3 id="vdc-emulator">16.4. Python visual emulator — Х30 ускорение отладки</h3>
+<p>Главный урок Zuma: для отладки физики цепочки <b>пишем Python-эмулятор первым</b>, а не последним. Цикл sjasmplus → spgbld → Unreal → screenshot/dump занимает ~5 минут на итерацию. Tkinter-эмулятор: правка кода → Alt-Tab → видно. ~10 секунд. Х30 ускорение.</p>
+<p>Эмулятор повторяет VDC-логику 1-в-1: класс <code>VDCEngine</code> с теми же <code>Slots[]</code>, <code>SlotOffsets[]</code>, <code>HSA</code>, <code>Sub</code>, <code>Shot2[]</code>, <code>DoGapStep</code>, <code>ScanForNewMatch</code>, <code>CheckMatch3</code>. Управление мышью (motion=прицел, click=выстрел). Каждый кадр пишется в текстовый лог:</p>
+<pre><code>frame slotsLen hsa hsub stalled scanIdx [slots] [offsets] [shot2] [rollback]</code></pre>
+<p>По логу видно ровно те эпизоды, которые в asm ловятся только глазами. Например, для бага «не отрисованный хвост»: <code>grep</code> по логу показал группы кадров где <code>t = (HSA-i)*32 + Sub + offset &lt; 0</code> — = шар «за стартом» во время cascade rollback. Решение: при <code>t&lt;0</code> ball не рисуется (= pre-spawn зона, как в оригинальной Zuma). В asm эквивалент — флаг PRESERVE в <code>BcsPreClassify</code>: если HSA-i&lt;0, slot не render'ится в PASS2.</p>
+<p>Когда Python-эмулятор НЕ помогает — TS-Conf hardware (DMA granularity, FM_EN/CRAM, IRQ-таймиги, кэш). Их моделировать на Python нерентабельно, остаёмся в Unreal/ZEsarUX.</p>
+
+<h3 id="vdc-fixpack">16.5. VDC physics fix-pack 2026-05-08 — итерация Python → asm</h3>
+<p>За одну сессию итеративной отладки в Python-эмуляторе нашли и устранили 13 связанных багов VDC-модели. Все исправления потом портированы в asm одним блоком. Описание ключевых.</p>
+
+<h4>Gap-check ассимметричный — overlap при insert ≠ cascade-gap</h4>
+<p>Старая формула <code>|offsets[i] - offsets[i-1]| &lt; 8</code> симметрична. Проблема: при insert новый шар получает <code>offset = -CELL_SIZE/2 + (head_off + tail_off)/2</code>, а соседний bumped имеет <code>offset = 0</code>. Diff = -16, |diff| = 16 ≥ 8 → match-3 НЕ срабатывает, хотя шары физически касаются.</p>
+<p>Решение — diff трактовать как <b>signed pixel-distance correction</b> (pixel_dist = CELL_SIZE + diff): диапазон <code>-CELL_SIZE ≤ diff &lt; GAP_MAX</code>. Левая граница допускает overlap (diff = -CS = pixel_dist 0), правая блокирует cascade-gap (diff = +CS = pixel_dist 64).</p>
+<pre><code><span class="cmt">; ASM: было |offset[i] - offset[i-1]| &lt; 8</span>
+<span class="cmt">; Стало:</span>
+<span class="kw">SUB</span> C                    <span class="cmt">; A = offset[B] - offset[B-1]</span>
+<span class="kw">NEG</span>                      <span class="cmt">; A = offset[B-1] - offset[B] = d (Python direction)</span>
+<span class="kw">ADD</span> A, CELL_SIZE         <span class="cmt">; A = d + CELL_SIZE (= pixel_dist)</span>
+<span class="kw">CP</span> CELL_SIZE + DM3_OFFSET_GAP_MAX   <span class="cmt">; unsigned compare</span>
+<span class="kw">JR</span> NC, .done             <span class="cmt">; out of [-CS..GAP_MAX-1] → exit</span></code></pre>
+
+<h4>CASCADE marker — is_gap exclusion для соседей</h4>
+<p>Маркер <code>GAP_CASCADE</code> ставится когда <code>slots[lb-1] == slots[rb+1]</code>. Если оба соседа — gap-маркеры (например, два STOP'а слева и справа), они равны (оба #FE) → ложный CASCADE с <code>HSA-=1</code> и rollback'ом без причины. Фикс — добавить проверки <code>is_gap</code>.</p>
+
+<h4>STOP gap_step — переделан на cascade-like</h4>
+<p>Раньше STOP-семантика: только tail-снап вперёд (<code>offsets[k..end] -= CELL_SIZE</code>). Голова не двигается, HSA не меняется → расхождение HSA от SlotsLen накапливается, spawn не попадает в track[0].</p>
+<p>Стало: симметрично с CASCADE — <code>HSA-=1</code> + <code>offsets[0..k-1] += CELL_SIZE</code> с cap'ом max +CELL_SIZE. Tail НЕ компенсируем (shift idx-=1 + HSA-=1 автоматически сохраняет позицию).</p>
+
+<h4>Cap +CELL_SIZE для head компенсации</h4>
+<p>Без cap'а несколько cascade'ов подряд накапливают offset до 70+ → head визуально «зависает» на десятки кадров пока offset не decay'ится до 0. Решение: <code>offsets[j] = min(offsets[j] + CELL_SIZE, CELL_SIZE)</code>.</p>
+
+<h4>DoGapStep — RET после STOP вместо fall-through в CASCADE</h4>
+<p>Если STOP+CASCADE срабатывают в одном вызове <code>DoGapStep</code>, HSA уменьшается на 2 за тик, но head компенсация cap'нута на +CELL_SIZE → head съезжает -32 px в одном кадре = видимый рывок назад. Фикс: обрабатывать ОДИН маркер за вызов.</p>
+
+<h4>InsertChainBall — head-forward модель</h4>
+<p>Старая модель: shift_right + offset=0 для нового шара + tail snap-back. Новая (Python-эквивалент):</p>
+<ol>
+<li>Считаем <code>new_offset = -CELL_SIZE/2 + (head_off + tail_off) / 2</code> — midpoint между соседями.</li>
+<li>Shift Slots/Offsets/<b>Shot2</b> [idx..end] вправо на 1 (<b>раньше Shot2 не сдвигался — был баг</b>).</li>
+<li>Slots[idx]=color, Offsets[idx]=new_offset, Shot2[idx]=1.</li>
+<li>SlotsLen+=1.</li>
+<li>HSA+=1 с cap по track-end.</li>
+<li>Offsets[0..idx-1] = max(off - CELL_SIZE, -CELL_SIZE) — head компенсация с cap'ом.</li>
+<li>ChainFreezeCounter = CELL_SIZE.</li>
+</ol>
+<p>Эффект: chain продвигается на 1 cell к killzone, head плавно слайдится 32 px вперёд за 32 кадра, новый шар появляется ровно посередине между head'ом и bumped'ом без overlap'а.</p>
+
+<h4>ChainFreezeCounter — пауза hsub-инкремента после insert/cascade-close</h4>
+<p>Без freeze: при insert head компенсация (offset -=CELL_SIZE) decay'ится за 32 кадра, ОДНОВРЕМЕННО chain движется (hsub++ каждый кадр). Net advance = 2*CELL_SIZE вместо 1. Через несколько выстрелов накапливается 18+ cell расхождения с slots_len.</p>
+<p>Решение: новое поле <code>ChainFreezeCounter</code>, ставится в CELL_SIZE (= 32 кадра) после insert и после CASCADE close. <code>MoveChain</code> при freeze &gt; 0 декрементит counter и возвращается, не инкрементируя hsub. Spawn НЕ блокируется — он использует свой gate по hsub=0.</p>
+
+<h4>SpawnChainBall — offset = SlotOffsets[SlotsLen-1]</h4>
+<p>Раньше новый шар получал offset=0. Если хвост был в decay'е (ненулевой offset), новый шар оказывался не на 32 px позади хвоста, а на 32+|offset| px → визуальная «дырка». Теперь offset нового = offset предыдущего хвоста → синхронный decay phase, ровный 32 px spacing.</p>
+
+<h4>AnimateChain gap_step align по hsub=0</h4>
+<p>Раньше <code>gap_step</code> срабатывал ровно на каждом 32-м кадре независимо от hsub. После <code>do_gap_step</code> chain мог быть в произвольной фазе (hsub=15, например), и следующий spawn попадал на track[15] вместо track[0].</p>
+<p>Фикс: counter дошёл до threshold → проверяем hsub. Если != 0 — держим counter на threshold, ждём. На ближайшем hsub=0 wrap'е fire'им. Следующий tick = hsub=0 → spawn спавнит ровно на track[0].</p>
+
+<h4>RandomBallColor — фильтр по цветам chain'а</h4>
+<p>Лягушке не должен выпадать цвет, которого больше нет в цепочке (= бесполезный выстрел). Фильтр через <code>BuildColorMask</code>: сканируем <code>Slots[0..len-1]</code>, собираем 6-битную маску, в random'е циклически пробуем mod NUM_BALL_COLORS до попадания в маску.</p>
+
+<h4>Урок: Python-эмулятор первым</h4>
+<p>Все 13 фиксов нашли в Python за один день. Каждая итерация: правка в Tkinter → Alt-Tab → виден результат в течение секунд. После того как все фиксы заработали — портирование в asm заняло меньше часа последовательной работы по списку (без новых багов в логике, только адаптация Z80-семантики). Это иллюстрирует основной тезис: <b>сложную физику отлаживайте на высокоуровневой модели, а потом транскрибируйте в asm. Прямая отладка в asm обходится в 30× времени и не находит большинства багов</b>.</p>
+
+<h2 id="ports-ref">Приложение: список портов</h2>
+<pre><code><span class="cmt">; Видео и графика</span>
+VCONFIG    <span class="kw">EQU</span> <span class="num">#00AF</span>   <span class="cmt">; видеорежим</span>
+VPAGE      <span class="kw">EQU</span> <span class="num">#01AF</span>   <span class="cmt">; страница видеопамяти</span>
+GXOFFSL    <span class="kw">EQU</span> <span class="num">#02AF</span>   <span class="cmt">; canvas X scroll lo</span>
+GXOFFSH    <span class="kw">EQU</span> <span class="num">#03AF</span>
+GYOFFSL    <span class="kw">EQU</span> <span class="num">#04AF</span>   <span class="cmt">; canvas Y scroll lo</span>
+GYOFFSH    <span class="kw">EQU</span> <span class="num">#05AF</span>
+TSCONFIG   <span class="kw">EQU</span> <span class="num">#06AF</span>   <span class="cmt">; TSU enable bits</span>
+PALSEL     <span class="kw">EQU</span> <span class="num">#07AF</span>   <span class="cmt">; селектор палитр</span>
+BORDER     <span class="kw">EQU</span> <span class="num">#0FAF</span>
+
+<span class="cmt">; Память</span>
+PAGE0..3   <span class="kw">EQU</span> <span class="num">#10AF..#13AF</span>
+FMADDR     <span class="kw">EQU</span> <span class="num">#15AF</span>   <span class="cmt">; FM_EN бит 4 = #10</span>
+
+<span class="cmt">; TSU</span>
+TMPAGE     <span class="kw">EQU</span> <span class="num">#16AF</span>   <span class="cmt">; карта тайлов</span>
+T0GPAGE    <span class="kw">EQU</span> <span class="num">#17AF</span>   <span class="cmt">; графика тайл-слоя 0</span>
+T1GPAGE    <span class="kw">EQU</span> <span class="num">#18AF</span>
+SGPAGE     <span class="kw">EQU</span> <span class="num">#19AF</span>   <span class="cmt">; графика спрайтов</span>
+
+<span class="cmt">; DMA</span>
+DMASADL    <span class="kw">EQU</span> <span class="num">#1AAF</span>   <span class="cmt">; source addr lo</span>
+DMASADH    <span class="kw">EQU</span> <span class="num">#1BAF</span>
+DMASADX    <span class="kw">EQU</span> <span class="num">#1CAF</span>   <span class="cmt">; source page</span>
+DMADADL    <span class="kw">EQU</span> <span class="num">#1DAF</span>
+DMADADH    <span class="kw">EQU</span> <span class="num">#1EAF</span>
+DMADADX    <span class="kw">EQU</span> <span class="num">#1FAF</span>
+DMALEN     <span class="kw">EQU</span> <span class="num">#26AF</span>
+DMACTR     <span class="kw">EQU</span> <span class="num">#27AF</span>
+DMANUM     <span class="kw">EQU</span> <span class="num">#28AF</span>
+
+<span class="cmt">; Прочее</span>
+SYSCONFIG  <span class="kw">EQU</span> <span class="num">#20AF</span>   <span class="cmt">; такт + кэш</span>
+INTMASK    <span class="kw">EQU</span> <span class="num">#2AAF</span>
+
+<span class="cmt">; Скроллинг тайлов</span>
+T0XOFSL/H  <span class="kw">EQU</span> <span class="num">#40AF/#41AF</span>
+T0YOFSL/H  <span class="kw">EQU</span> <span class="num">#42AF/#43AF</span>
+T1XOFSL/H  <span class="kw">EQU</span> <span class="num">#44AF/#45AF</span>
+T1YOFSL/H  <span class="kw">EQU</span> <span class="num">#46AF/#47AF</span>
+
+<span class="cmt">; Kempston Mouse</span>
+MOUSE_X    <span class="kw">EQU</span> <span class="num">#FBDF</span>
+MOUSE_Y    <span class="kw">EQU</span> <span class="num">#FFDF</span>
+MOUSE_BTN  <span class="kw">EQU</span> <span class="num">#FADF</span>
+</code></pre>
+
+<h3>Демо: что можно сделать на TS-Config</h3>
+<figure>
+  <img src="images/06-tsconfig-demo-animaciya.gif" alt="Демо-анимация возможностей TS-Config">
+  <figcaption>Демо из оригинального учебника: тайлы + спрайты + скроллинг, всё разом.</figcaption>
+</figure>
+
+<hr>
+
+<p style="text-align:center; color: var(--code-cmt); margin-top: 3em;">
+Учебник написан в процессе разработки Zuma Deluxe на TS-Config.<br>
+Базируется на оригинальном пособии С. С. Слободчикова + опыт боевой отладки.<br>
+2026-05-02
+</p>
+
+</main>
+
+<a href="#toc" class="toc-back">↑ Содержание</a>
+
+</body>
+</html>
