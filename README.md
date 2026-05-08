@@ -6,7 +6,8 @@
 
 ## Структура
 
-- `src/` — Python-скрипты пайплайна подготовки уровней:
+- `src/` — Python-инструменты:
+  - `vdc_visual_emulator.py` — визуальный эмулятор VDC chain physics (tkinter). Запуск: `python vdc_visual_emulator.py`. Воспроизводит slot-array движок асма bit-exact (BALL_DIAMETER=20, COLLISION_BBOX_HALF=14, hemisphere insert, GAP_STOP/GAP_CASCADE) — для отладки физики цепочки без цикла sjasmplus → spgbld → Unreal.
   - `convert_track.py` — Catmull-Rom сглаживание + 1px ресемпл траектории
   - `scale_level.py` — масштабирование уровня под TS-Conf canvas (360×256)
   - `split_levels.py`, `trace_track.py`, `rename_levels_by_difficulty.py` — вспомогательные
