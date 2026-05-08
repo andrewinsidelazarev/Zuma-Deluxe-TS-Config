@@ -153,10 +153,11 @@
     <li><a href="#convert">14. Конвертация графики 4bpp</a></li>
     <li><a href="#zuma">15. Zuma как пример</a></li>
     <li><a href="#advanced">16. Продвинутые техники</a></li>
+    <li><a href="#lessons-2026-05-08">17. Уроки 2026-05-08 — explosion + race</a></li>
     <li><a href="#ports-ref">Приложение: порты</a></li>
   </ul>
   <h2>Об учебнике</h2>
-  <p style="font-size: 13px; color: var(--code-cmt);">Версия от 2026-05-08. Написано на основе оригинального учебника С.С. Слободчикова + опыт реальной разработки игры Zuma Deluxe на Z80. Раздел 16 добавлен по итогам решения реальных проблем (DMA X-granularity, Fixed Timestep, VDC модель цепочки, Python-эмулятор для отладки физики). 16.5 — fix-pack из 13 связанных багов VDC, найденных в Python и портированных в asm за одну сессию.</p>
+  <p style="font-size: 13px; color: var(--code-cmt);">Версия от 2026-05-08 (вечер). Написано на основе оригинального учебника С.С. Слободчикова + опыт реальной разработки игры Zuma Deluxe на Z80. Раздел 16 — fix-pack из 13 багов VDC, найденных в Python и портированных в asm. Раздел 17 — explosion-анимация через TSU layer 1, hemisphere insert, и hardware-race TSU writes vs display refresh.</p>
 </nav>
 
 <main>
@@ -1068,6 +1069,131 @@ TrackData[t_i] → (X, Y) для blit'а
 
 <h4>Урок: Python-эмулятор первым</h4>
 <p>Все 13 фиксов нашли в Python за один день. Каждая итерация: правка в Tkinter → Alt-Tab → виден результат в течение секунд. После того как все фиксы заработали — портирование в asm заняло меньше часа последовательной работы по списку (без новых багов в логике, только адаптация Z80-семантики). Это иллюстрирует основной тезис: <b>сложную физику отлаживайте на высокоуровневой модели, а потом транскрибируйте в asm. Прямая отладка в asm обходится в 30× времени и не находит большинства багов</b>.</p>
+
+<h2 id="lessons-2026-05-08">17. Уроки сессии 2026-05-08 — explosion-анимация и refresh-race</h2>
+
+<p>Это самый «плотный» день: за один сеанс реализовали match-3 destroy-анимацию через TSU и поймали несколько архитектурных граблей, которые стоит знать заранее.</p>
+
+<h3>17.1 BALL_PIX ≤ 2 × min(TrackX): «gap» в начале трека</h3>
+
+<p>Подняли BALL_PIX с 18 до 22 (HD-look — шары стали почти соприкасаться). Сразу появился странный «gap» в самом начале спирали — один-два шара невидимы.</p>
+
+<p>Корень: рендер вычисляет top-left спрайта <code>X_top = trackX - DMA_SPRITE_HALF</code> (где <code>DMA_SPRITE_HALF = BALL_PIX/2</code>). У нас минимум <code>trackX = 10</code>, при <code>BALL_PIX=22</code> получалось <code>10-11 = -1</code> → <code>BIT 7,H</code> срабатывал → <code>BcsPreClassify</code> ставил слот в PRESERVE → DMA не рисовал шар. Логика VDC при этом считала шар существующим — отсюда «дырка».</p>
+
+<p><b>Правило:</b> <code>BALL_PIX ≤ 2 × min(TrackX)</code>. Перед поднятием размера шара пройти по TrackData, найти minX/minY, посчитать лимит. Уровень с минимумом X=10 → BALL_PIX ≤ 20. Если очень хочется больший шар — сдвинуть трек или добавить partial horizontal-clip в BcsPreClassify (как уже есть vertical ClipTop/ClipBot).</p>
+
+<h3>17.2 Hemisphere insert: target_idx = i или i+1</h3>
+
+<p>До фикса при попадании летящего шара в шар цепочки <code>target_idx = i</code> всегда (head-side). Эффект: шар «прыгал на шар вперёд» от точки попадания, если визуально был ближе к правому соседу.</p>
+
+<p>Hemisphere check (имеется в Python-эмуляторе): scan назад/вперёд от <code>i</code> до первого non-GAP соседа, посчитать Manhattan-дистанцию летящего шара до prev и next, выбрать меньший. Если ближе к next → <code>target_idx = i+1</code>.</p>
+
+<pre><code><span class="cmt">; ComputeSlotXY(A=idx) → TmpHemX/Y (центр шара по TrackData)</span>
+<span class="cmt">; ManhattanDistToBall: |TmpHemX-TmpBallCX| + |TmpHemY-TmpBallCY|</span>
+<span class="cmt">; После collision detect:</span>
+    <span class="kw">LD A</span>, (TmpChainIdx)
+    <span class="kw">LD</span> (TmpTargetIdx), <span class="kw">A</span>          <span class="cmt">; default = i</span>
+<span class="cmt">; ... scan prev / next non-GAP, считаем Manhattan, ...</span>
+    <span class="kw">LD HL</span>, (TmpDistNext)
+    <span class="kw">LD DE</span>, (TmpDistPrev)
+    <span class="kw">AND A</span>
+    <span class="kw">SBC HL</span>, <span class="kw">DE</span>
+    <span class="kw">JR NC</span>, .keep                  <span class="cmt">; dist_next >= dist_prev → keep target=i</span>
+    <span class="kw">LD A</span>, (TmpChainIdx)
+    <span class="kw">INC A</span>
+    <span class="kw">LD</span> (TmpTargetIdx), <span class="kw">A</span>          <span class="cmt">; ближе к next → target = i+1</span>
+.keep:
+</code></pre>
+
+<p>Manhattan вместо Euclidean: 16-bit unsigned add без 32-bit умножения. Для типичных dx/dy (1–15 px) даёт тот же результат.</p>
+
+<h3>17.3 Match-3 explosion-анимация через TSU layer 1</h3>
+
+<p>Архитектура: цепь рисуется через DMA на canvas (T0). Match-3 ставит <code>Slots[lb..rb] = GAP_STOP</code> и через 32 кадра <code>DoGapStep</code> сдвигает GAP к концу — но визуально шары просто исчезают, без эффекта взрыва.</p>
+
+<p>Решение — добавить state arrays и render через TSU слот:</p>
+
+<pre><code>Chain0_ExplodingFrame:  DS MAX_SLOTS_PER_CHAIN  <span class="cmt">; 0 = норм, 1..14 = идёт анимация</span>
+Chain0_ExplodingMarker: DS MAX_SLOTS_PER_CHAIN  <span class="cmt">; GAP_STOP/GAP_CASCADE для финализации</span>
+EXPLOSION_FRAMES   <span class="kw">EQU</span> <span class="num">14</span>     <span class="cmt">; длительность анимации, 7 кадров × 2 ticks</span>
+DESTROY_BASE_TNUM  <span class="kw">EQU</span> <span class="num">2560</span>   <span class="cmt">; page 11 carpet row 40, frame N TNUM = base + N*2</span>
+</code></pre>
+
+<p>Pipeline:</p>
+<ol>
+<li><b>CheckMatch3</b>: вместо немедленного <code>Slots[i]=GAP_STOP</code> ставим <code>ExplodingFrame[i]=1</code>, <code>ExplodingMarker[i]=B</code> (тип GAP). Slots остаются цветами до финализации.</li>
+<li><b>AnimateChain</b>: каждый кадр <code>ExplodingFrame[i]++</code>; при достижении EXPLOSION_FRAMES → <code>Slots[i]=Marker[i]</code>, <code>ExplodingFrame[i]=0</code>, дальше DoGapStep как обычно.</li>
+<li><b>UpdateExplodeSprites</b>: новая функция, для каждого слота с <code>ExplodingFrame[i]&gt;0</code> пишет TSU descriptor в DESC_CHAIN0 + i*6:
+<ul>
+<li><code>frame_idx = (ExplodingFrame[i]-1) / 2</code> (0..6, 7 кадров за 14 тиков)</li>
+<li><code>TNUM = DESTROY_BASE_TNUM + frame_idx * 2</code> (2 cells/frame для 16×16 sprite)</li>
+<li><code>SPAL = 2 + Slots[i]</code> (= цвет шара) — destroy-frame окрашивается в цвет соответствующего шара</li>
+<li>Координаты: top-left = (trackX-8, trackY-8) с clamp к 0</li>
+</ul>
+</li>
+<li><b>DetectMatch3 / CheckBallChainCollisions</b>: skip если <code>ExplodingFrame[i]&gt;0</code> — exploding шар не должен расширять run и не ловит летящий шар.</li>
+<li><b>BcsPreClassify</b>: при <code>ExplodingFrame[i]&gt;0</code> → DESTROY (DMA не рисует — TSU перекрывает).</li>
+</ol>
+
+<p>Графика destroy-кадров: 13 кадров vertical strip из <a href="https://github.com/GalaxyShad/Zuma-Deluxe-HD">Zuma-Deluxe-HD</a> (gameobjects.png, rect {395, 0, 105, 120}) → ресайз до 16×16, прорежено до 7 кадров. Pixel idx маппится по brightness в палитру шара (<code>balls_pal.bin</code> предварительно отсортирован по яркости — idx 15 = самый яркий тон). Это даёт цветной gradient «осколков».</p>
+
+<h3>17.4 SPLEAP: TSU layer 1 над canvas</h3>
+
+<p>По умолчанию все TSU спрайты в layer 0 — рисуются <i>под</i> T0 (тилмап) и canvas. Frog/cursor видны только потому, что в их области canvas прозрачен. А destroy-frame в зоне фона уровня — закрыт пикселями canvas.</p>
+
+<p>Фикс: установить бит SPLEAP (#40) в byte 1 первого descriptor (frog at #0200). Все следующие descriptor'ы переходят в layer 1 — поверх T0+canvas:</p>
+
+<pre><code>UpdateFrogSprite:
+    <span class="cmt">; ...</span>
+    <span class="kw">LD</span> (HL), <span class="num">%01101110</span>    <span class="cmt">; SPSIZ64 + ACT + SPLEAP — следующие в layer 1</span>
+</code></pre>
+
+<h3>17.5 TSU writes должны быть в early vblank — иначе race с разверткой ⚡</h3>
+
+<p>Самая хитрая грабля. После добавления destroy-анимации спрайты «дрожали» с эффектом «как видеокамерой 50 Гц снимать ЭЛТ-монитор 60 Гц» — рассинхрон по кадровой частоте.</p>
+
+<p>Корень: <code>UpdateExplodeSprites</code> вызывался <i>после</i> <code>BlitChainToShadow</code> (тяжёлый DMA blit, ~10 ms на 60 шаров). К моменту записи descriptors дисплейная развёртка уже шла по visible части кадра — TSU читал partially-updated SFILE и видел частично старые, частично новые байты. Каждый кадр конкретные байты «новые» оказывались на разных позициях развёртки → визуальный «снос» сверху вниз.</p>
+
+<p><b>Diagnostic, который однозначно подтвердил гипотезу:</b> временно заменили <code>UpdateExplodeSprites</code> на <code>DiagnosticGrid</code>, который пишет 60 destroy-спрайтов сеткой 6×10 поверх canvas:</p>
+<ul>
+<li>Версия 1: <code>DiagnosticGrid</code> вызывается <i>каждый кадр</i> в RenderFrame → видим тот же «рассинхрон по развертке».</li>
+<li>Версия 2: <code>DiagnosticGrid</code> вызывается <i>один раз</i> в Init, в RenderFrame не пишем → сетка стабильна, без «дрожания».</li>
+</ul>
+
+<p>Сравнение двух версий показало: race возникает именно из-за ежекадрового write в visible part. Не из-за позиционирования, не из-за SIZE, не из-за палитры.</p>
+
+<p><b>Фикс:</b> переставить порядок вызовов в RenderFrame так, чтобы все TSU writes (через FM_EN) сгруппировались в начале (= в vblank-окне, на которое разбудила HALT), а DMA blits (canvas, не SFILE) шли после:</p>
+
+<pre><code>RenderFrame:
+    <span class="cmt">; --- TSU writes early (vblank) ---</span>
+    <span class="kw">CALL</span> UpdateFrogSprite
+    <span class="kw">CALL</span> UpdatePreviewSprite
+    <span class="kw">CALL</span> UpdateBallSprites
+    <span class="kw">CALL</span> HideChainSprites
+    <span class="kw">CALL</span> UpdateExplodeSprites    <span class="cmt">; критично — до DMA</span>
+    <span class="kw">CALL</span> UpdateCursorSprite
+    <span class="cmt">; --- DMA blits last (canvas, не TSU) ---</span>
+    <span class="kw">CALL</span> BlitKillzoneToShadow
+    <span class="kw">CALL</span> BlitChainToShadow
+    <span class="kw">RET</span>
+</code></pre>
+
+<p><b>Правило:</b> любые writes в SFILE через FM_EN должны быть сгруппированы в начале RenderFrame (после HALT). DMA blits, modify канваса и любую тяжёлую работу — в конец. Если TSU write попадёт после визуально-видимой границы кадра — будет race.</p>
+
+<h3>17.6 Метаурок: diagnostic-визуализация перед trial-and-error</h3>
+
+<p>Когда «не работает в верхней половине экрана», легко начать дёргать константы — поменять SHIFT_UP с 4 на 2, переключиться SPSIZ24 ↔ SPSIZ16, добавить clamp X/Y, потом убрать. После 3-4 итераций ничего не починилось, а накопилось много изменений, и непонятно, какое из них что сломало.</p>
+
+<p>Правильнее: после 2-3 неудачных правок остановиться и придумать <b>изолирующий диагностик</b>. Сетка sprites (выше) — пример: за 10 минут показала, что глюки идут с TSU pipeline, а не с геометрией расчёта Y. После такого диагностика fix очевиден.</p>
+
+<p>Другие диагностические инструменты, которые мы используем:</p>
+<ul>
+<li><b>Python-эмулятор VDC</b> (см. урок 16) — изолирует логику цепочки от рендера. Если глюк в Python воспроизводится — баг в VDC. Если только в asm — баг в DMA/TSU pipeline.</li>
+<li><b>Дамп памяти</b> через Save Memory в Unreal или ZRCP в ZEsarUX — увидеть реальные значения <code>Slots[]</code>, <code>ExplodingFrame[]</code> на спорном кадре.</li>
+<li><b>Логирование событий</b> в Python (<code># MATCH3</code>, <code># COLLISION</code>) — отследить trigger sequence.</li>
+</ul>
+
+<p>Триггер для переключения на diagnostic: пользователь повторяет «то же самое не работает» 2-3 раза. Это сигнал, что текущая гипотеза неверна и нужно изолировать корень.</p>
 
 <h2 id="ports-ref">Приложение: список портов</h2>
 <pre><code><span class="cmt">; Видео и графика</span>
