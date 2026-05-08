@@ -2,18 +2,23 @@
 
 Собранные SPG-файлы для запуска в Unreal Speccy. Достаточно открыть `.spg` в эмуляторе.
 
-| Версия | Дата | Что нового |
-|--------|------|------------|
-| v7 | 2026-05-08 | Match-3 explosion-анимация через TSU layer 1, refresh-race пофиксен, hemisphere insert, 6 цветов |
-| v6 | 2026-05-08 | Match-3 explosion (первая рабочая версия), TSU integration |
-| v5 | 2026-05-08 | HD-look шары (диаметр 21 px), gap-слева пофиксен (BALL_PIX 22→20) |
-| v4 | 2026-05-08 | Python VDC emulator portированы все физик-фиксы в asm |
+## Текущая версия
+
+**v7 (2026-05-08)** — `zuma_v7_2026-05-08.spg`
+
+Что работает:
+- VDC chain physics, match-3 detection, cascade roll-back
+- Match-3 explosion-анимация через TSU layer 1 (7 кадров, цветной gradient)
+- Refresh-race пофиксен (TSU writes в early vblank)
+- Hemisphere insert (target = i или i+1 по ближайшему соседу)
+- 6 цветов шаров (runtime LevelNumColors)
+- HD-look шары (диаметр ~20 px, цепь занимает весь трек)
 
 ## Запуск
 
-1. Скачать `.spg` файл.
-2. Открыть в Unreal Speccy: `Unreal.exe zuma_vN_2026-05-08.spg`.
-3. Управление — мышь (LMB — выстрел).
+1. Скачать `zuma_v7_2026-05-08.spg`.
+2. `Unreal.exe zuma_v7_2026-05-08.spg`.
+3. Управление: мышь (LMB — выстрел).
 
 ## Платформа
 
