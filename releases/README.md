@@ -4,7 +4,7 @@
 
 ## Текущая версия
 
-**v7 (обновлено 2026-05-10)** — `zuma_v7_2026-05-08.spg`
+**v7 (обновлено 2026-05-10)** — `zuma_v7_2026-05-10.spg`
 
 ### Fixes 2026-05-09 / 10 (новые сверху)
 - **Stack overlap TrackData** — root cause «false killzone V7» glitch. Stack at `#BFFF` затирал TrackData[2643..2648] (= точки трека на canvas (58,103)). Fix: stack перенесён в slot 3 page #0C (`LD SP, #FFFE`), 14KB safe zone после track_overflow.
@@ -26,8 +26,8 @@
 
 ## Запуск
 
-1. Скачать `zuma_v7_2026-05-08.spg`.
-2. `Unreal.exe zuma_v7_2026-05-08.spg`.
+1. Скачать `zuma_v7_2026-05-10.spg`.
+2. `Unreal.exe zuma_v7_2026-05-10.spg`.
 3. Управление: мышь (LMB — выстрел).
 
 ## Платформа
