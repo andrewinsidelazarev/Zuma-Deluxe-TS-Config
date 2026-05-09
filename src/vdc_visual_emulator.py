@@ -166,6 +166,8 @@ class VDCEngine:
                     s.shot2[j] = s.shot2[j+1]
                     s.last_render_pos[j] = s.last_render_pos[j+1]
                     s.rollback_counter[j] = s.rollback_counter[j+1]
+                    s.exploding_frame[j] = s.exploding_frame[j+1]
+                    s.exploding_marker[j] = s.exploding_marker[j+1]
                 s.last_render_pos[s.slots_len - 1] = None
                 s.rollback_counter[s.slots_len - 1] = 0
                 s.slots_len -= 1
@@ -191,6 +193,8 @@ class VDCEngine:
                     s.shot2[j] = s.shot2[j+1]
                     s.last_render_pos[j] = s.last_render_pos[j+1]
                     s.rollback_counter[j] = s.rollback_counter[j+1]
+                    s.exploding_frame[j] = s.exploding_frame[j+1]
+                    s.exploding_marker[j] = s.exploding_marker[j+1]
                 s.last_render_pos[s.slots_len - 1] = None
                 s.rollback_counter[s.slots_len - 1] = 0
                 s.slots_len -= 1
@@ -332,12 +336,19 @@ class VDCEngine:
             s.shot2[j] = s.shot2[j-1]
             s.last_render_pos[j] = s.last_render_pos[j-1]
             s.rollback_counter[j] = s.rollback_counter[j-1]
+            # Сдвиг exploding_frame/marker обязателен: иначе финализация после
+            # EXPLOSION_FRAMES запишет GAP по старому индексу и удалит соседний
+            # non-exploding шар. См. test_repro_false_match3.py.
+            s.exploding_frame[j] = s.exploding_frame[j-1]
+            s.exploding_marker[j] = s.exploding_marker[j-1]
         # Новый шар: midpoint между head и tail соседями (учитывая decay-state).
         s.slots[target_idx] = color
         s.offsets[target_idx] = sat_signed(new_offset)
         s.shot2[target_idx] = 1
         s.last_render_pos[target_idx] = None
         s.rollback_counter[target_idx] = 0
+        s.exploding_frame[target_idx] = 0
+        s.exploding_marker[target_idx] = GAP_STOP
         s.slots_len += 1
         # HSA+1 = chain продвинулся на 1 cell вперёд (к killzone). Cap по track-end.
         if s.hsa < len(self.track) // CELL_SIZE - 1:
@@ -348,9 +359,8 @@ class VDCEngine:
         # многократных insert/match offsets не уходили в большие отрицательные значения.
         for i in range(target_idx):
             s.offsets[i] = max(s.offsets[i] - CELL_SIZE, -CELL_SIZE)
-        # Freeze chain motion на CELL_SIZE кадров — head компенсация decay'ится без
-        # параллельного chain-motion, иначе net advance = 2*CELL_SIZE вместо 1*CELL_SIZE.
-        s.chain_freeze_counter = CELL_SIZE
+        # NO freeze: head decay (-CS→0) + natural hsub++ → head advance 2 cells за
+        # CELL_SIZE кадров, освобождая место для нового шара. Хвост не останавливается.
         return self.check_match3(target_idx)
 
     # --------- Compute slot's track-position ----------
@@ -391,7 +401,7 @@ class App:
         self.root.title('VDC Visual Emulator — Zuma')
         # State log — append every frame for offline analysis
         self.log = open('c:/z80/zuma/vdc_emulator_log.txt', 'w', buffering=1)
-        self.log.write('# frame slotsLen hsa hsub stalled scanIdx slots offsets shot2 rollback\n')
+        # Header написан в _init_log_header после создания engine.
         self.cw = SCR_W * SCALE
         self.ch = (SCR_H + RENDER_Y_OFFSET) * SCALE
         self.canvas = tk.Canvas(root, width=self.cw, height=self.ch, bg='#202028')
@@ -401,6 +411,10 @@ class App:
 
         self.track = load_track()
         self.engine = VDCEngine(self.track, seed=42)
+        kx, ky = self.track[-1]
+        track_len = len(self.track)
+        self.log.write(f'# track len={track_len} cell_size={CELL_SIZE} max_hsa={track_len//CELL_SIZE - 1} killzone=({kx},{ky})\n')
+        self.log.write('# frame slotsLen hsa hsub stalled scanIdx slots offsets shot2 rollback\n')
         self.flying = []
         self.next_color = self.rng_color()
         self.mouse_xy = (FROG_CX, FROG_CY - 50)
