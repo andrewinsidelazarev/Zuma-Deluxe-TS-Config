@@ -118,9 +118,10 @@ SPLEAP   EQU #40    ; «sprite is last in current layer» (на это пола�
 DESC_FROG         EQU #0200    ; 64×64 жаба
 DESC_PREVIEW      EQU #0206    ; 24×24 mouth ball — текущий цвет, во рту
 DESC_BACK_PREVIEW EQU #020C    ; 8×8 spine preview — следующий цвет, на спине
-DESC_CHAIN0       EQU #0212    ; 60 chain-слотов (360 байт) → off-screen, реальный chain в canvas
-DESC_BALL0        EQU #037A    ; 16 летящих шаров (96 байт)
-DESC_CURSOR       EQU #03DA    ; 16×16 курсор
+DESC_KZSKULL      EQU #0212    ; 32×32 череп killzone (TSU sprite, TNUM меняется по KzFrame)
+DESC_CHAIN0       EQU #0218    ; 70 chain-слотов (420 байт #0218..#03BB)
+DESC_BALL0        EQU #03BC    ; 8 летящих шаров (48 байт #03BC..#03EB)
+DESC_CURSOR       EQU #03EC    ; 16×16 курсор #03EC..#03F1
 
 SCR_W    EQU 360
 SCR_H    EQU 288
@@ -145,14 +146,15 @@ CURSOR_MIN_Y EQU 0
 CURSOR_MAX_X EQU SCR_W - 16                     ; 344
 CURSOR_MAX_Y EQU SCR_H - 16                     ; 272
 
-MAX_BALLS     EQU 16            ; летящих шаров (cooldown 20 frames между выстрелами хватает)
+MAX_BALLS     EQU 8             ; летящих шаров (cooldown 20 frames → max ~3 active одновременно;
+                                ; уменьшено с 16 чтобы освободить SFILE для chain TSU расширения)
 MAX_CHAIN_BALLS EQU 240         ; VDC chain physics limit. HD оригинал: 256. У нас 240 чтобы
                                 ; TrackData (12386 байт) поместился в slot 2 (16K) без spillover.
                                 ; Если перенести TrackData на свою page — можно поднять до 255.
-TSU_CHAIN_SPRITES EQU 60        ; зарезервированных SFILE-дескрипторов для off-screen TSU-цепочки.
-                                ; Физический chain рисуется через DMA в canvas; TSU-слоты лишь
-                                ; держатся ACT=1+offscreen, чтобы TSU дошёл до courseur. Поэтому
-                                ; SFILE-сторона не масштабируется с MAX_CHAIN_BALLS.
+TSU_CHAIN_SPRITES EQU 70        ; зарезервированных SFILE-дескрипторов для chain TSU layer 1.
+                                ; Bumped 60→70 чтобы tail не уходил за лимит при insert (= шар пропадал
+                                ; визуально когда chain рос с 60 до 61). 70 покрывает realistic max.
+                                ; SFILE max 85 descriptors; layout: 4 frog/preview/cursor + 8 balls + 70 chain = 82 ≤ 85.
 
 ; Параметры уровня (level1 / lvl11 в оригинальной Zuma):
 LEVEL_START_BALLS  EQU 35       ; быстрая фаза: 35 шаров вылезают «поездом»
@@ -211,8 +213,20 @@ BCS_PRESERVE        EQU 2    ; off-track / off-canvas → shadow не трога
 
 ; Killzone (череп с лучами в конце трека) — DMA blit 64×64 на canvas.
 ; 64x64 при stride 512 = 32K → разбит на 2 src pages: top rows 0..31, bot 32..63.
+; Killzone — sun base в pages #46/#47 (DMA single static frame, не анимируется).
+; Skull рендерится отдельно через TSU sprite layer 1, atlas в page #0D.
+; KzFrame теперь = TSU sprite frame index (0..9), управляет TNUM в DESC_KZSKULL.
 KILLZONE_DMA_PAGE_TOP EQU #46
 KILLZONE_DMA_PAGE_BOT EQU #47
+KZ_SKULL_TNUM_BASE    EQU 3584  ; (page #0D - SGPAGE #06) * 512 = 7 * 512 = 3584
+KZ_SKULL_SPAL         EQU 4     ; CRAM #40..#4F (yellow palette)
+; Offset для skull относительно KzCenter (= track end). Sun имеет hole offset от
+; визуального центра — корректируем здесь чтобы skull аккурат в центр sun-дырки.
+KZ_SKULL_X_OFFS       EQU 2     ; +2 px right
+KZ_SKULL_Y_OFFS       EQU 0
+KZ_NUM_FRAMES         EQU 10
+KZ_FRAME_DELAY        EQU 4     ; кол-во game frames между transitions (= ~12 fps анимации)
+KZ_OPEN_DIST          EQU 96    ; trackpoint distance до kz, при котором рот начинает открываться (= 3 cells × 32)
 KZ_PIX             EQU 64
 ROTATION_SPEED EQU 4
 
@@ -276,6 +290,7 @@ ShadowPageBase:  DB CANVAS_B_PAGE_BASE
 GameState:       DB 0
 AbsorbCounter:   DB 0   ; сколько шаров поглощено в state 1 (для статистики/render)
 GameOverTick:    DB 0   ; счётчик кадров в state 2
+HeadFlightTick:  DB 0   ; 0..FLIGHT_FRAMES — счётчик «полёта» головы к центру kz в state 1
 
 ChainPrevDstA:    DS MAX_CHAIN_BALLS * 4
 ChainPrevValidA:  DS MAX_CHAIN_BALLS
@@ -325,6 +340,9 @@ Entry:
 
     ; ---------- ИНИЦИАЛИЗАЦИЯ ИГРЫ ----------
     CALL InitGame
+
+    ; Burn killzone в golden ОДИН раз (= bg для chain DMA restore содержит track+kz).
+    CALL OneTimeBlitKzToGolden
 
     ; ---------- IM 2 + frame IRQ для Fixed Timestep ----------
     ; ISR-handler в page 5 (наш код). I=#5E, peripheral data byte для frame IRQ
@@ -404,12 +422,13 @@ UpdateGame:
 
     LD A, (BallsSpawned)
     CP LEVEL_TOTAL_BALLS
-    JR NC, .ug_check_trigger          ; spawn закончен — проверяем Game Over trigger
+    JR NC, .ug_no_more_spawn
     LD A, (FrameCounter)
     AND 63
-    JR NZ, .ug_after_spawn
+    JR NZ, .ug_no_more_spawn
     CALL TrySpawnAndCount
-    JR .ug_after_spawn
+.ug_no_more_spawn:
+    JR .ug_check_trigger
 
 .ug_fast:
     LD B, FAST_ADVANCE
@@ -420,12 +439,12 @@ UpdateGame:
     DJNZ .ug_fast_advance
     CALL AnimateChain
     CALL TrySpawnAndCount
-    JR .ug_after_spawn
+    ; FALLTHROUGH в .ug_check_trigger
 
 .ug_check_trigger:
-    ; Только когда BallsSpawned >= LEVEL_TOTAL_BALLS (= спавн полностью завершён).
-    ; До этого Manhattan-trigger может сработать когда HSA уже на cap'е, но ещё
-    ; вылезают шары — абсорпция съест ещё-не-вылезшие → визуальный мусор.
+    ; Game Over trigger срабатывает в любой фазе — как только head Manhattan(KzCenter)<16.
+    ; В fast-фазе достичь killzone маловероятно (chain ещё короткая), но если случилось —
+    ; absorption запустится сразу. Player видит «вылет в killzone» как в Python emulator.
     CALL CheckHeadAtKillzone
     OR A
     JR Z, .ug_after_spawn
@@ -433,6 +452,11 @@ UpdateGame:
     LD (GameState), A
     XOR A
     LD (AbsorbCounter), A
+    LD (HeadFlightTick), A
+    ; Reset HeadSub=0 чтобы первый шар получил полный CELL_SIZE цикл advance перед
+    ; первым абсорбом. Иначе если trigger сработал при hsub=30, ball через 2 calls
+    ; уже wrap'ится и вылетает мгновенно — юзер видит «animation starts from 2nd ball».
+    LD (Chain0_HeadSub), A
 .ug_after_spawn:
 
     LD A, (ShotCooldown)
@@ -441,11 +465,12 @@ UpdateGame:
     DEC A
     LD (ShotCooldown), A
 .ug_skip_cd:
+    CALL UpdateKzFrame                ; killzone mouth animation: open at 3-cell distance, close on rollback
     RET
 
 .ug_not_playing:
-    ; State 1 = absorbing: 12× MoveChainAbsorb + AnimateChain. Когда SlotsLen=0 → state 2.
-    ; State 2 = chain пуст, текст GAME OVER. Кадры идут через GameOverTick (для render).
+    ; State 1 = absorbing 1:1 с Python emulator: 12× MoveChainAbsorb + AnimateChain.
+    ; State 2 = chain пуст, текст GAME OVER, через 200 кадров JP InitGame.
     CP 1
     JR NZ, .ug_state2
     LD B, FAST_ADVANCE
@@ -457,20 +482,24 @@ UpdateGame:
     CALL AnimateChain
     LD A, (Chain0_SlotsLen)
     OR A
-    RET NZ
+    JR NZ, .ug_kz_anim                ; chain не пуст — продолжаем в state 1
     LD A, 2
     LD (GameState), A
     XOR A
     LD (GameOverTick), A
-    RET
+    JR .ug_kz_anim
 
 .ug_state2:
     LD A, (GameOverTick)
     INC A
     LD (GameOverTick), A
     CP 200                            ; ~4 сек @50fps в state 2 — пауза с пустой ареной
-    RET C
+    JR C, .ug_kz_anim
     JP InitGame                       ; auto-restart: InitGame пере-инициализирует всё (GameState=0 сам внутри)
+
+.ug_kz_anim:
+    CALL UpdateKzFrame                ; kz mouth anim: full-open в state 1/2
+    RET
 
 ; ============================================================================
 ; RENDER FRAME — atomic swap + все DMA/TSU writes.
@@ -510,11 +539,15 @@ RenderFrame:
     CALL UpdateFrogSprite
     CALL UpdatePreviewSprite
     CALL UpdateBallSprites
-    CALL UpdateChainTSUSprites
+    CALL HideChainSprites                    ; chain рендерится DMA (partial-clip для entry-zone),
+                                             ; TSU descriptors просто off-screen чтобы не висели stale.
     CALL UpdateExplodeSprites                ; перенесён early — иначе race с display refresh
     CALL UpdateCursorSprite
-    CALL BlitKillzoneToShadow
-    CALL BlitChainToShadow
+    CALL UpdateKzSkullSprite                 ; skull frame TNUM = base + KzFrame*4 (10 frames lose anim)
+    CALL BlitKillzoneToShadow                ; kz first — chain DMA blit'ит шары ПОВЕРХ kz pixels.
+    CALL BlitChainToShadow                   ; PASS1 restore читает golden (track+kz после OneTimeBlitKzToGolden
+                                             ; в init), prev ball positions в kz-зоне восстанавливаются с kz pixels,
+                                             ; не track-цветом → нет «дыр» в kz.
     RET
 
 ; ================================================================
@@ -646,6 +679,7 @@ InitGame:
     LD (GameState), A           ; 0 = playing
     LD (AbsorbCounter), A
     LD (GameOverTick), A
+    LD (HeadFlightTick), A
     LD A, #FF
     LD (MatchScanIdx), A   ; "no scan pending"
 
@@ -672,8 +706,10 @@ InitGame:
     LD A, (HL) : LD (KzCenterY), A : INC HL
     LD A, (HL) : LD (KzCenterY+1), A
     XOR A
-    LD (KzFrame), A
+    LD (KzFrame), A           ; mouth closed at start
     LD (KzFrameWait), A
+    LD (KzTargetFrame), A
+    LD (KzFrameLastBurned), A ; OneTimeBlitKzToGolden ниже выпекает frame 0
     LD A, 1
     LD (KzVisible), A
     ; --- Chain0 slot-state: заполнить GAP_MARKER (= GAP_STOP), offsets/Shot2/scalars обнулить.
@@ -3738,6 +3774,130 @@ GOLDEN_PAGE_BASE   EQU #30
 ; COPY GOLDEN TO SHADOW — DMA 9 страниц фона в текущий shadow buffer.
 ; ShadowPageBase обновляется при swap.
 ; ================================================================
+; ================================================================
+; UPDATE KZ FRAME — каждый тик: вычислить target frame по дистанции head→kz,
+; продвинуть KzFrame к target, при изменении KzFrame перевыпечь kz в golden
+; (чтобы chain DMA restore читал АКТУАЛЬНЫЙ frame, без stale frame под шарами).
+; State 1/2 → target = full open (= NUM_FRAMES-1).
+; State 0: distance = (TRACK-1) - head_t. Если dist >= KZ_OPEN_DIST → closed (0).
+; Иначе frame = (KZ_OPEN_DIST - dist) / 8 (capped к NUM_FRAMES-1).
+; Roll-back (head_t уменьшается → dist растёт) → target снижается → mouth закрывается.
+; ================================================================
+UpdateKzFrame:
+    LD A, (GameState)
+    OR A
+    JR Z, .ukf_state0
+    LD A, KZ_NUM_FRAMES - 1
+    JR .ukf_target_set
+
+.ukf_state0:
+    ; head_t = HSA*32 + hsub + offset[0] (signed)
+    LD A, (Chain0_HeadSlotAbs)
+    LD H, 0 : LD L, A
+    ADD HL, HL : ADD HL, HL : ADD HL, HL
+    ADD HL, HL : ADD HL, HL                  ; HL = HSA*32
+    LD A, (Chain0_HeadSub)
+    LD E, A : LD D, 0
+    ADD HL, DE                               ; +hsub
+    LD A, (Chain0_SlotOffsets)
+    LD E, A : LD D, 0
+    BIT 7, A
+    JR Z, .ukf_off_pos
+    DEC D                                    ; sign-extend negative offset
+.ukf_off_pos:
+    ADD HL, DE                               ; HL = head_t (signed)
+    BIT 7, H
+    JR Z, .ukf_have_t
+    LD HL, 0                                 ; t<0 → use 0
+.ukf_have_t:
+    LD DE, TRACK_NUM_POINTS - 1
+    EX DE, HL
+    AND A
+    SBC HL, DE                               ; HL = (TRACK-1) - head_t = distance
+    BIT 7, H
+    JR NZ, .ukf_full_open                    ; dist < 0 → past kz → full open
+    LD A, H
+    OR A
+    JR NZ, .ukf_closed                        ; dist >= 256 → closed
+    LD A, L
+    CP KZ_OPEN_DIST
+    JR NC, .ukf_closed                        ; dist >= 96 → closed
+    ; A = dist 0..95. frame = (96 - dist) / 8 (capped 0..9)
+    LD B, A
+    LD A, KZ_OPEN_DIST
+    SUB B                                    ; A = 96 - dist (1..96)
+    SRL A : SRL A : SRL A                    ; / 8 (0..12)
+    CP KZ_NUM_FRAMES
+    JR C, .ukf_target_set
+    LD A, KZ_NUM_FRAMES - 1
+    JR .ukf_target_set
+
+.ukf_full_open:
+    LD A, KZ_NUM_FRAMES - 1
+    JR .ukf_target_set
+
+.ukf_closed:
+    XOR A
+
+.ukf_target_set:
+    LD (KzTargetFrame), A
+
+    ; Animation: каждые KZ_FRAME_DELAY тиков двигаем KzFrame к KzTargetFrame на 1.
+    LD A, (KzFrameWait)
+    INC A
+    CP KZ_FRAME_DELAY
+    JR C, .ukf_save_wait
+    XOR A
+    LD (KzFrameWait), A
+    LD A, (KzFrame)
+    LD B, A
+    LD A, (KzTargetFrame)
+    CP B
+    JR Z, .ukf_check_burn                    ; same — нечего двигать
+    JR C, .ukf_dec
+    INC B
+    JR .ukf_save_frame
+.ukf_dec:
+    DEC B
+.ukf_save_frame:
+    LD A, B
+    LD (KzFrame), A
+    JR .ukf_check_burn
+.ukf_save_wait:
+    LD (KzFrameWait), A
+
+.ukf_check_burn:
+    ; Re-burn НЕ нужен — sun (DMA) static, не меняется. Skull (TSU) меняется через
+    ; descriptor TNUM, golden остаётся с sun-only burn'ом.
+    RET
+
+; ================================================================
+; ONE-TIME BLIT KZ TO GOLDEN — выпекает kz pixels в golden pages #30..#38
+; ОДИН раз в init. После этого chain DMA PASS1 restore (читает golden) выдаёт
+; track+kz, не только track. Шары в kz-зоне восстанавливаются корректно, без
+; «track-цветных дыр» в килл-зоне на местах prev ball positions.
+;
+; Реализация: подменяем ShadowPageBase на GOLDEN_PAGE_BASE и BcsGoldenOff=0
+; (= source page = ShadowPageBase + BcsGoldenOff = #30 = golden), вызываем
+; BlitKillzoneToShadow. KzRestoreHalf делает golden→golden = no-op, KzBlitHalf
+; пишет kz src page → golden. Возвращаем переменные обратно.
+; ================================================================
+OneTimeBlitKzToGolden:
+    LD A, (ShadowPageBase)
+    PUSH AF
+    LD A, (BcsGoldenOff)
+    PUSH AF
+    LD A, GOLDEN_PAGE_BASE
+    LD (ShadowPageBase), A
+    XOR A
+    LD (BcsGoldenOff), A
+    CALL BlitKillzoneToShadow
+    POP AF
+    LD (BcsGoldenOff), A
+    POP AF
+    LD (ShadowPageBase), A
+    RET
+
 CopyGoldenToShadow:
     LD BC, FMADDR : XOR A : OUT (C), A
     LD A, 256-1 : LD BC, DMALEN : OUT (C), A   ; burst = 256 words = 512 byte (1 строка)
@@ -3789,10 +3949,9 @@ BlitChainToShadow:
     LD A, #10 : LD (BcsGoldenOff), A           ; canvas B → golden = +#10
 .bcs_have:
 
-    RET                                       ; chain теперь TSU (UpdateChainTSUSprites);
-                                              ; DMA blit в canvas не нужен. Без RET restore
-                                              ; golden→shadow в killzone-зоне затирал killzone-
-                                              ; pixels pavement'ом для prev ball positions.
+    ; Chain рендерится DMA (= partial-clip для entry-zone trackpoints с y<0,
+    ; шары вылезают из-за верхнего края канваса). UpdateChainTSUSprites больше не
+    ; вызывается — TSU chain слоты держатся off-screen через HideChainSprites.
     LD BC, FMADDR : XOR A : OUT (C), A        ; FM_EN=0 для DMA
     LD A, DMA_BURST_WORDS-1 : LD BC, DMALEN : OUT (C), A   ; 9 words burst
     ; DMANUM ставится индивидуально каждым blit/restore (partial-blit: переменное число строк)
@@ -4189,6 +4348,18 @@ BlitKillzoneToShadow:
     OR A
     RET Z
 
+    ; BcsGoldenOff устанавливается явно — не полагаемся на stale prev-frame value
+    ; от BlitChainToShadow. Если stale, src KzRestoreHalf читает из BALLS_DMA пageя
+    ; (#40+over) → trash rectangle below kz.
+    LD A, (ShadowPageBase)
+    CP CANVAS_A_PAGE_BASE
+    JR NZ, .bks_use_b
+    LD A, #20 : LD (BcsGoldenOff), A           ; canvas A → golden = +#20
+    JR .bks_have
+.bks_use_b:
+    LD A, #10 : LD (BcsGoldenOff), A           ; canvas B → golden = +#10
+.bks_have:
+
     LD BC, FMADDR : XOR A : OUT (C), A
     LD A, KZ_PIX/2-1 : LD BC, DMALEN : OUT (C), A   ; 32 words = 64 px wide
     LD A, KZ_PIX/2-1 : LD BC, DMANUM : OUT (C), A   ; 32 lines per half
@@ -4244,7 +4415,7 @@ BlitKillzoneToShadow:
     LD (TmpKzMid), A
 
     CALL KzRestoreHalf
-    LD A, KILLZONE_DMA_PAGE_TOP
+    LD A, KILLZONE_DMA_PAGE_TOP                  ; sun base — single static frame
     CALL KzBlitHalf
 
     ; ============= BOTTOM HALF: rows 32..63, dst Y = TmpKzY + 32 ===
@@ -4597,6 +4768,50 @@ UpdateChainTSUSprites:
 ; Дескриптор #020C (после жабы и preview-шарика).
 ; Спрайт 16x16, TNUM=512 (первый тайл страницы 7), SPAL=1.
 ; ================================================================
+; ================================================================
+; UPDATE KZ SKULL SPRITE — TSU sprite 32×32, центр в (KzCenterX, KzCenterY).
+; TNUM = KZ_SKULL_TNUM_BASE + KzFrame*4 (frame N at carpet col N*4, row 0 of page #0D).
+; SPAL = KZ_SKULL_SPAL = 4 (yellow palette CRAM #40..#4F).
+; ================================================================
+UpdateKzSkullSprite:
+    LD BC, FMADDR : LD A, FM_EN : OUT (C), A
+    LD HL, DESC_KZSKULL
+
+    ; Y_L / Y_H: top-left Y = KzCenterY - 16 + KZ_SKULL_Y_OFFS (32×32 half = 16)
+    LD DE, (KzCenterY)
+    LD A, E : SUB 16 - KZ_SKULL_Y_OFFS : LD E, A
+    LD A, D : SBC A, 0 : LD D, A
+    LD (HL), E : INC HL                         ; Y_L
+    LD A, D : AND 1 : OR SPACT+SPSIZ32          ; Y_H + ACT + SIZE32
+    LD (HL), A : INC HL
+
+    ; X_L / X_H: top-left X = KzCenterX - 16 + KZ_SKULL_X_OFFS
+    LD DE, (KzCenterX)
+    LD A, E : SUB 16 - KZ_SKULL_X_OFFS : LD E, A
+    LD A, D : SBC A, 0 : LD D, A
+    LD (HL), E : INC HL                         ; X_L
+    LD A, D : AND 1 : OR SPSIZ32                ; X_H + SIZE32
+    LD (HL), A : INC HL
+
+    ; TNUM_L / TNUM_H + SPAL: TNUM = KZ_SKULL_TNUM_BASE + KzFrame*4
+    LD A, (KzFrame)
+    ADD A, A : ADD A, A                         ; A = KzFrame*4
+    LD E, A : LD D, 0
+    LD HL, KZ_SKULL_TNUM_BASE
+    ADD HL, DE                                  ; HL = TNUM
+    LD A, L
+    PUSH HL
+    POP DE                                      ; DE = TNUM
+    LD HL, DESC_KZSKULL + 4
+    LD (HL), A : INC HL                         ; TNUM_L
+    LD A, D
+    AND #0F
+    OR KZ_SKULL_SPAL << 4                       ; SPAL=4 → bit 4..7 = 0100
+    LD (HL), A
+
+    LD BC, FMADDR : XOR A : OUT (C), A
+    RET
+
 UpdateCursorSprite:
     LD BC, FMADDR : LD A, FM_EN : OUT (C), A
     LD HL, DESC_CURSOR
@@ -5012,6 +5227,8 @@ MatchScanIdx:    DB 0  ; idx где scan для new match (set после GAP cl
 TmpGapIdx:       DB 0  ; рабочий регистр в DoGapStep (idx найденного GAP-cell для удаления)
 KzFrame:         DB 0  ; current killzone animation frame (0..KZ_NUM_FRAMES-1)
 KzFrameWait:     DB 0  ; счётчик кадров до switch на след. anim-frame
+KzTargetFrame:   DB 0  ; target frame (current animation moves toward it)
+KzFrameLastBurned: DB 0  ; последний frame, выпеченный в golden — для re-burn при изменении
 KzCenterX:       DW 0  ; центр killzone (= TrackData[TRACK_NUM_POINTS-1])
 KzCenterY:       DW 0
 KzVisible:       DB 0  ; 1 = killzone готов к рендеру (после Init)

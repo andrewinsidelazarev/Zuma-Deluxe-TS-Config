@@ -1195,6 +1195,95 @@ DESTROY_BASE_TNUM  <span class="kw">EQU</span> <span class="num">2560</span>   <
 
 <p>Триггер для переключения на diagnostic: пользователь повторяет «то же самое не работает» 2-3 раза. Это сигнал, что текущая гипотеза неверна и нужно изолировать корень.</p>
 
+<h2 id="lessons-2026-05-10">18. Уроки сессии 2026-05-10 — Game Over absorption и kz split (sun DMA / skull TSU)</h2>
+
+<h3>18.1. Game Over absorption — от Python emulator до asm</h3>
+
+<p>Финал уровня в Zuma — головной шар цепочки доходит до killzone, и оставшаяся цепь «вылетает» в неё за несколько секунд. Реализовали как state-machine с тремя состояниями:</p>
+<ul>
+<li><b>State 0 (PLAYING)</b> — обычная игра. Каждый тик проверяем <code>Manhattan(head_pos, KzCenter) &lt; 16</code> → переход в state 1.</li>
+<li><b>State 1 (ABSORBING)</b> — <code>FAST_ADVANCE × MoveChainAbsorb</code> = 12 hsub++ за тик (= ~7 px/tick advance). Когда <code>HSA == TRACK_NUM_SLOTS-1</code> и <code>hsub</code> wrapping → <code>AbsorbHead</code> (shift_left arrays + slots_len--, <b>HSA НЕ декрементируем</b>). Когда <code>SlotsLen == 0</code> → state 2.</li>
+<li><b>State 2 (GAME OVER)</b> — пустая цепь, <code>GameOverTick++</code>. Через 200 кадров → <code>JP InitGame</code> (auto-restart).</li>
+</ul>
+
+<p>Сделали сначала в Python emulator (<code>vdc_visual_emulator.py</code>), визуально верифицировали, потом портировали в asm. Итерация Python→asm занимает 30 мин против двух часов прямой отладки asm.</p>
+
+<h3>18.2. AbsorbHead без HSA-=1 — критичный bug-fix</h3>
+
+<p>Первая реализация делала <code>SlotsLen-=1 + shift_left + HSA-=1</code> (по аналогии с DoGapStep). Симптом — «анимация absorption начинается со второго шарика»: ball 0 visually поглощается, но ball 1 не подхватывает место head'а, а уходит назад на CELL_SIZE трекпоинтов.</p>
+
+<p><b>Math:</b> при wrap'е hsub=32→0 в момент HSA cap, head ball reaches trackpoint (cap-1)*32+32 = cap*32. После shift_left: new slot 0 = old slot 1. Если HSA=cap (без -=1), <code>slot_t(0)_new = cap*32 + 0 + offset[0]</code>, что совпадает с <code>slot_t(1)_old at hsub=32</code>. Continuity автоматическая. Если HSA-=1 (= cap-1), new slot_t(0) = (cap-1)*32+0+offset = backward jump на CELL_SIZE.</p>
+
+<p><b>Lesson:</b> при array-shift в момент wrap координаты, проверить math совместимости новой формулы со СТАРОЙ позицией. Если shift+HSA-= даёт DOUBLE-decrement в формуле slot_t — backward jump.</p>
+
+<h3>18.3. Reset HeadSub=0 на trigger entry — для smooth первого шара</h3>
+
+<p>В Python emulator absorption запускался плавно. В asm первый шар вылетал «мгновенно» — без visible advance перед absorb. Причина: trigger срабатывает при Manhattan&lt;16, в этот момент hsub уже близко к CELL_SIZE-1 (= ball почти у границы next-cell). Первый MoveChainAbsorb wrap'ит hsub → absorb через 1-2 calls. Ball не успевает «пролететь» свой cycle.</p>
+
+<p><b>Fix:</b> при переходе в state 1, явно <code>LD A, 0 : LD (Chain0_HeadSub), A</code>. Первый шар теперь имеет полный CELL_SIZE цикл advance.</p>
+
+<h3>18.4. Killzone visual: sun + skull — split рендера</h3>
+
+<p>Изначально kz было один 64×64 sprite в DMA blit (composite sun + skull в Python converter, 10 frames). Проблемы:</p>
+<ul>
+<li>При смене KzFrame golden burn выдавал «прямоугольник мусора» под kz (multi-page DMA, BcsGoldenOff stale).</li>
+<li>Аnimация 10 frames × 2 pages = 20 страниц памяти на kz — расточительно.</li>
+<li>Шары в kz области либо «под kz» (ход restore'а золотом) либо «над kz» (порядок blit'ов) — не было гибкого Z-order.</li>
+</ul>
+
+<p><b>Решение:</b> разделить:</p>
+<ul>
+<li><b>Sun rays</b> — DMA blit single static frame в canvas (<code>killzone_top.bin</code>/<code>killzone_bot.bin</code> в pages #46/#47, sun-only).</li>
+<li><b>Skull</b> — TSU sprite 32×32 на layer 1 над canvas. Atlas в page #0D (16K, 4bpp carpet). 10 frames × 32×32 = 10240 байт + padding. <code>TNUM = KZ_SKULL_TNUM_BASE + KzFrame*4</code>. SPAL=4 (yellow палитра CRAM #40..#4F).</li>
+</ul>
+
+<p><b>Преимущества:</b> sun остаётся stable в golden (= chain DMA restore читает track+sun). Skull меняется только через TSU descriptor TNUM — никаких golden re-burn'ов. Балы автоматически идут «под» skull (TSU layer 1 над canvas, шар TSU тоже layer 1, но скулл descriptor выше = renders сверху по SFILE-порядку).</p>
+
+<h3>18.5. Skull centering — KZ_SKULL_X_OFFS</h3>
+
+<p>Sun source в spritesheet имеет визуальный центр НЕ совпадающий с центром crop-rect (78×78). Когда сун resize'ится 78→64, hole остаётся +2 px от центра 64×64 канвы. Skull TSU sprite, размещённый в <code>(KzCenter - 16)</code>, окажется на 2 px левее видимой sun-дырки.</p>
+
+<p><b>Fix:</b> два константы offset'а в asm:</p>
+<pre><code>KZ_SKULL_X_OFFS       <span class="kw">EQU</span> 2     <span class="cmt">; +2 px right (компенсация sun source asymmetry)</span>
+KZ_SKULL_Y_OFFS       <span class="kw">EQU</span> 0
+</code></pre>
+<p>Skull top-left = <code>KzCenter - 16 + offset</code>. Тонкая настройка по визуальному соответствию.</p>
+
+<h3>18.6. Mouth animation: open at 3 cells, close on rollback</h3>
+
+<p>Скулл анимируется от закрытого рта (frame 0) до полностью открытого (frame 9), в зависимости от distance head→kz:</p>
+<pre><code>distance = (TRACK_NUM_POINTS - 1) - head_t
+target_frame = (KZ_OPEN_DIST - distance) / 8   <span class="cmt">; clamped 0..9</span>
+KzFrame moves toward target by 1 every KZ_FRAME_DELAY=4 ticks
+</code></pre>
+<p>Когда head приближается к kz — distance падает, target растёт, KzFrame инкрементится плавно (~12 fps анимации). При rollback (cascade match-3) head отъезжает — distance растёт, target снижается, mouth закрывается. State 1 (absorbing) → target = 9 (full open).</p>
+
+<h3>18.7. Trash rectangle root cause — BcsGoldenOff stale</h3>
+
+<p>Длительный bug: при run gameplay в canvas под kz появлялся прямоугольник цветного мусора. Локализовали через ZEsarUX dump памяти и анализ math:</p>
+
+<p>BlitKillzoneToShadow вызывается ПЕРЕД BlitChainToShadow в RenderFrame. <code>KzRestoreHalf</code> читает <code>BcsGoldenOff</code> для compute src_page = <code>ShadowPageBase + BcsGoldenOff + over</code>. Но <code>BcsGoldenOff</code> устанавливается ТОЛЬКО в <code>BlitChainToShadow</code> — каждый кадр после kz blit'а.</p>
+
+<p>На первом kz blit'е каждого кадра <code>BcsGoldenOff</code> — это значение из ПРЕДЫДУЩЕГО кадра. ShadowPageBase XOR'ится между #10 и #20 каждый кадр → каждый второй кадр эти значения дают <code>src = #40+over</code> (= balls_dma_even page) → читаем атлас шара как kz background → пиксели balls пишутся в shadow на kz position.</p>
+
+<p><b>Fix:</b> явный setup BcsGoldenOff в начале <code>BlitKillzoneToShadow</code> по текущему ShadowPageBase, не полагаясь на prev-frame value.</p>
+
+<p><b>Lesson:</b> shared state между routines в одном frame'е надо инициализировать <i>там где используется</i> или гарантировать что предыдущий call действительно выставил его в нужное значение для текущего вызова. Алтернация ShadowPageBase ломает stale-value предположения.</p>
+
+<h3>18.8. Sprite TNUM addressing for skull atlas</h3>
+
+<p>TSU SGPAGE=#06 покрывает 4096 TNUM (= 8 pages × 512 tiles per page). Page #0D = смещение 7 от SGPAGE → <code>TNUM_offset = 7 × 512 = 3584</code>. В page #0D разместили skull atlas в carpet формате:</p>
+<pre><code><span class="cmt">; 32×32 sprite = 4×4 cells. Frame N at carpet col = N*4, row = 0..3.</span>
+KZ_SKULL_TNUM_BASE = 3584
+TNUM(N) = 3584 + N*4   <span class="cmt">; for N in 0..9</span>
+
+<span class="cmt">; Descriptor:</span>
+TNUM_L = LOW(TNUM)
+TNUM_H = (TNUM &gt;&gt; 8) | (SPAL &lt;&lt; 4)   <span class="cmt">; SPAL=4 → byte = 0x4E for frame 0</span>
+</code></pre>
+
+<p>Кодирование 4bpp tile в carpet: <code>addr = cy * 2048 + ycnt * 256 + cx * 4 + bsel</code>, nibble=px%2. Аналогично <code>convert_balls24.py</code>. Конвертер — <code>make_kz_skull_atlas.py</code>.</p>
+
 <h2 id="ports-ref">Приложение: список портов</h2>
 <pre><code><span class="cmt">; Видео и графика</span>
 VCONFIG    <span class="kw">EQU</span> <span class="num">#00AF</span>   <span class="cmt">; видеорежим</span>

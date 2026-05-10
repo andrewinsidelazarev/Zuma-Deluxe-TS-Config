@@ -4,16 +4,30 @@
 
 ## Текущая версия
 
-**v9 (обновлено 2026-05-10)** — `zuma_v9_2026-05-10_chain_tsu_gameover.spg`
+**v12 (2026-05-10)** — `zuma_v12_2026-05-10_kz_split.spg`
 
-### Fixes 2026-05-10 (Game Over absorption) — новые
+### Fixes 2026-05-10 (v12 — kz architectural split: sun DMA + skull TSU) — самые новые
+- **Sun rays** — DMA blit single static frame в canvas (killzone_top.bin/bot.bin pages #46/#47, sun-only без skull композита).
+- **Skull** — отдельный TSU sprite 32×32 на layer 1 над canvas. Atlas в page #0D (`kz_skull_atlas.bin`, 4bpp carpet, 10 frames). TNUM = 3584 + KzFrame*4. SPAL=4 (yellow palette).
+- **Mouth animation** — UpdateKzSkullSprite в RenderFrame TSU pipeline пересчитывает TNUM по KzFrame каждый кадр. Open at distance < 96 трекпоинтов (= 3 cells), close on rollback. State 1 (absorbing) → full open (frame 9).
+- **Шары визуально под skull** — TSU layer 1 над canvas даёт правильный Z-order: chain DMA балы видны поверх sun-rays canvas, но проходят за skull-sprite (= "balls fall into mouth" как в оригинальной Zuma).
+- **Trash rectangle bug fixed** — `BcsGoldenOff` теперь устанавливается явно в начале `BlitKillzoneToShadow` по текущему ShadowPageBase. Раньше использовалось stale значение от prev frame's BlitChainToShadow → src page = #40+ (= ball atlas) → trash под kz.
+- **Skull centering** — KZ_SKULL_X_OFFS=2, KZ_SKULL_Y_OFFS=0 для тонкой подгонки skull под видимый центр sun's hole (sun source имеет hole offset +2 px от crop center).
+- **AbsorbHead continuity** — HSA НЕ декрементируем при shift_left, кадр совместим со старой формулой slot_t. Иначе backward-jump на CELL_SIZE при первой абсорпции.
+- **HeadSub reset на trigger entry** — первый шар получает полный CELL_SIZE цикл advance перед absorb. Без reset hsub был ~30 в момент trigger → 1-2 calls до wrap = мгновенный absorb 1-го шара.
+- **Per-level fast spawn parameter** — LEVEL_START_BALLS=35 (быстрая фаза «поезд»), LEVEL_REPEAT_BALLS=50 (нормальная скорость), LEVEL_TOTAL_BALLS=85.
+
+### Fixes 2026-05-10 (v10 — рабочая Game Over absorption)
+- **Chain rendering revert TSU → DMA** — UpdateChainTSUSprites заменён на HideChainSprites + BlitChainToShadow re-enabled. DMA blit имеет partial-clip (`BcsClipTop`/`BcsClipBot`), благодаря чему шары корректно вылезают из-за верхнего края экрана из spawn-зоны (track[0..29] с y<0). Chain TSU layer 1 не имел partial-clip → шары появлялись только когда полностью в visible зоне = «не из-за края».
+- **TSU_CHAIN_SPRITES limit устранён** — DMA не имеет лимита 60 sprites как TSU. Tail больше не пропадает при росте chain >60 на insert. SFILE chain слоты держатся off-screen через HideChainSprites.
+- **Game Over absorption trigger** — снят gate `BallsSpawned >= LEVEL_TOTAL_BALLS`. Теперь absorption запускается сразу как head Manhattan(KzCenter) < 16, в любой фазе (= как в Python emulator). Цепочка визуально влетает в killzone, шары исчезают по одному.
+- **AbsorbHead continuity fix** — HSA НЕ декрементируем при shift_left (= old idx 1 становится new idx 0 при том же HSA → cell-step компенсация уже встроена в формулу slot_t). Иначе цепь дёргалась назад на 32 px при первой абсорпции и анимация выглядела как «начинается со второго шарика».
+- **MAX_BALLS 16 → 8** + **TSU_CHAIN_SPRITES 60 → 70** — освободили SFILE descriptors на случай возврата chain TSU.
+
+### Fixes 2026-05-10 (v9 — chain-TSU + Game Over state machine baseline)
 - **Game Over state machine** — head ball Manhattan(KzCenter) < 16 → переход в state 1 (absorbing). Chain advance в темпе FAST_ADVANCE (как стартовая фаза появления цепи). Когда HSA достигает TRACK_NUM_SLOTS-1 — каждый тик shift Chain0_* arrays toward head + dec SlotsLen. SlotsLen=0 → state 2 (text TODO).
 - **Input lock в state 1/2** — HandleInput сразу RET если GameState != 0. Стрельба и frog rotation заблокированы во время absorption.
 - **GameState/AbsorbCounter** в #4015/16 (slot 1 page 5 first half, не SAVEBIN). InitGame явно зануляет — иначе random RAM на boot триггерит state machine.
-
-**Открытые после v9:**
-- Spawn-zone TSU rendering: balls вылетают не из-за края экрана (TSU не делает partial-clip как DMA chain в baseline relocated).
-- Tail ball пропадает при выстреле (insert artifact).
 
 ### Fixes 2026-05-10 (chain-TSU + relocated vars)
 - **Chain рисуется через TSU layer 1 поверх canvas** — шар в killzone-зоне теперь корректно поверх killzone-картинки, без pavement-gap под ним. Раньше chain DMA + restore golden→shadow затирал killzone-pixels pavement'ом для prev ball positions.
