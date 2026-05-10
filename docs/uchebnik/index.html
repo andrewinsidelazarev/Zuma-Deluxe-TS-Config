@@ -1284,6 +1284,123 @@ TNUM_H = (TNUM &gt;&gt; 8) | (SPAL &lt;&lt; 4)   <span class="cmt">; SPAL=4 → 
 
 <p>Кодирование 4bpp tile в carpet: <code>addr = cy * 2048 + ycnt * 256 + cx * 4 + bsel</code>, nibble=px%2. Аналогично <code>convert_balls24.py</code>. Конвертер — <code>make_kz_skull_atlas.py</code>.</p>
 
+<h2 id="lessons-2026-05-10-vol2">19. Уроки сессии 2026-05-10 — GAME OVER text + custom palette с dithering</h2>
+
+<h3>19.1. Зачем custom palette</h3>
+
+<p>В оригинальной Zuma надпись «GAME OVER» в state 2 показывается в gradient red→orange→yellow стилизованном шрифте. На TS-Conf TSU sprite использует SPAL field (4 бит) → 16 палитр × 16 цветов каждая. Все 16 палитр уже заняты:</p>
+<ul>
+<li>SPAL 0 — frog (CRAM #00..#0F)</li>
+<li>SPAL 1 — cursor (CRAM #10..#1F)</li>
+<li>SPAL 2..7 — ball palettes (blue, green, yellow, red, purple, white)</li>
+<li>SPAL 8..15 — canvas palette (CRAM #80..#FF, используется DMA bg-pixels)</li>
+</ul>
+
+<p>Свободного 16-color slot нет. Вариантов два:</p>
+<ol>
+<li><b>Переписать одну канвас-палитру (SPAL 8..15)</b> — рискованно, у уровня могут быть pixels с byte-value в этом range, цвета изменятся.</li>
+<li><b>Временно подменить ball-палитру на время state 2</b> — в state 2 все ball-sprites невидимы (chain absorbed, no flying balls, input locked), так что ball palette фактически не используется. Можно безопасно swap'нуть → restore при restart.</li>
+</ol>
+
+<p>Выбран вариант 2: SPAL=5 (red ball palette CRAM #50..#5F) подменяется на custom GAME OVER gradient при входе в state 2. <code>RestoreRedBallPalette</code> в <code>InitGame</code> вернёт оригинал при restart.</p>
+
+<h3>19.2. Generation gradient palette</h3>
+
+<p>16-color gradient: <code>idx 0</code> = transparent (C-bit=0), <code>idx 1..15</code> = плавный переход red→orange→yellow:</p>
+<pre><code>def gen_gradient():
+    palette = [(0, 0, 0)]                  <span class="cmt"># idx 0: transparent</span>
+    for i in range(1, 16):
+        t = (i - 1) / 14.0                 <span class="cmt"># 0..1</span>
+        r = 255 - int(50 * (1 - t))         <span class="cmt"># 205..255 (slight darkening idx 1)</span>
+        g = int(255 * t * t)                <span class="cmt"># 0..255 quadratic — smooth highlight</span>
+        b = int(20 * (1 - t))                <span class="cmt"># 20..0 minor blue для richer red</span>
+        palette.append((r, g, b))
+    return palette
+</code></pre>
+
+<p>Quadratic interpolation для G даёт более естественный highlight в yellow inner — линейный gradient выглядел бы плоским.</p>
+
+<p>Каждый CRAM word = 16-bit: <code>bit 15 = C, bits 14:10 = R, 9:5 = G, 4:0 = B</code> (5-5-5 RGB). idx 0 word = 0x0000 (C=0 → пиксель transparent для TSU). Остальные idx — обычный 5-5-5 с C=1.</p>
+
+<h3>19.3. Nearest-color quantization (= dithering free)</h3>
+
+<p>Source font (<code>nativealien48.png</code>) имеет ANTIALIASED edges: между red-outline пикселем и yellow-inner пикселем есть несколько промежуточных пикселей с различными RGB-значениями. Если просто threshold'ить (yellow inside if r+g>threshold else red), теряется gradient.</p>
+
+<p>Вместо threshold — nearest-color quantization:</p>
+<pre><code>def classify(r, g, b, a):
+    if a &lt; 64: return 0             <span class="cmt"># transparent</span>
+    best_idx, best_d = 1, 1e18
+    for i in range(1, 16):
+        pr, pg, pb = GRADIENT[i]
+        d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+        if d &lt; best_d:
+            best_d = d; best_idx = i
+    return best_idx
+</code></pre>
+
+<p>Каждый source pixel маппится на CLOSEST gradient color по Euclidean RGB distance. Anti-aliased edges автоматически падают в промежуточные indices (например, idx 7..9 для оранжевых тонов между red outline idx 1..3 и yellow inner idx 13..15) → soft dithered transitions без жёстких границ.</p>
+
+<p>Это <b>не</b> Floyd-Steinberg dithering (= нет error diffusion), но с 15-цветным gradient визуально достаточно: каждый пиксель имеет свой нативный gradient color, не binary.</p>
+
+<h3>19.4. SPSIZ64 для крупного шрифта</h3>
+
+<p>Стандартные TSU sprite size constants в нашем коде имели только 8/16/24/32. Frog уже использовал SPSIZ64 (= 64×64) через прямой byte literal <code>%01101110 = 0x6E</code>:</p>
+<pre><code>LD (HL), %01101110              <span class="cmt">; SPSIZ64 + ACT + SPLEAP</span>
+</code></pre>
+
+<p>Анализ битов TSU descriptor показал что SIZE field — <b>3 bits</b> (не 2):</p>
+<table>
+<tr><th>Bit pattern</th><th>Constant</th><th>Size</th></tr>
+<tr><td>000 (0)</td><td>SPSIZ8 = #00</td><td>8 px</td></tr>
+<tr><td>001 (2)</td><td>SPSIZ16 = #02</td><td>16 px</td></tr>
+<tr><td>010 (4)</td><td>SPSIZ24 = #04</td><td>24 px</td></tr>
+<tr><td>011 (6)</td><td>SPSIZ32 = #06</td><td>32 px</td></tr>
+<tr><td>100 (8)</td><td>SPSIZ40 = #08</td><td>40 px</td></tr>
+<tr><td>101 (A)</td><td>SPSIZ48 = #0A</td><td>48 px</td></tr>
+<tr><td>110 (C)</td><td>SPSIZ56 = #0C</td><td>56 px</td></tr>
+<tr><td>111 (E)</td><td>SPSIZ64 = #0E</td><td>64 px</td></tr>
+</table>
+
+<p>X-байт и Y-байт descriptor'а имеют независимые SIZE поля → можно делать прямоугольные sprites (например, 64×32 = SPSIZ64 в X + SPSIZ32 в Y).</p>
+
+<p>«GAME OVER» использует 5 sprites × 64×64 = 320×64 на canvas → крупный читаемый текст. Один sprite не покрывает все 320 px — TSU max sprite = 64×64.</p>
+
+<h3>19.5. Page allocation и реорганизация атласов</h3>
+
+<p>SGPAGE = #06 (frog atlas page), TNUM 12-bit = 4096 → reachable pages #06..#0D (8 pages × 512 tiles). Для GAME OVER 5 sprites × 64×64 = 320 tiles нужна почти целая page. Skull (10 × 32×32 = 160 tiles) была в page #0D — конфликтует.</p>
+
+<p>Решение: relocate skull в page_b (#0B, после destroy_gfx). Layout:</p>
+<pre><code><span class="kw">SLOT 1 : PAGE 11 : ORG #4000</span>          <span class="cmt">; page_b = #0B</span>
+<span class="kw">INCBIN</span> "destroy_gfx.bin"               <span class="cmt">; 8K, carpet rows 0..3 (TNUM 2560..)</span>
+<span class="kw">ORG #6000</span>                              <span class="cmt">; byte 8192 = carpet cy=4</span>
+<span class="kw">INCBIN</span> "kz_skull_atlas.bin"            <span class="cmt">; 8K, skull в rows 4..7 (TNUM 2816+N*4)</span>
+
+<span class="kw">SLOT 1 : PAGE 13 : ORG #4000</span>          <span class="cmt">; page #0D полностью свободна</span>
+<span class="kw">INCBIN</span> "gameover_text_atlas.bin"       <span class="cmt">; 16K full page (TNUM 3584+N*8)</span>
+</code></pre>
+
+<p><code>KZ_SKULL_TNUM_BASE</code> в asm обновляется с 3584 → 2816 (= (#0B - SGPAGE) × 512 + 4 × 64).</p>
+
+<h3>19.6. Reuse chain TSU descriptors</h3>
+
+<p>SFILE имеет ограниченное место (85 descriptors max). 5 новых descriptors для GAME OVER text — выделить отдельные нет места без shrinking ball/chain slots. Решение: <b>переиспользовать первые 5 chain TSU descriptors</b> (DESC_CHAIN0[0..4]).</p>
+
+<p>В обычной игре chain рендерится через DMA → chain TSU descriptors hidden через <code>HideChainSprites</code> (Y=#12C = 300 = off-screen). В state 2 chain пуст → можно безопасно override первые 5 chain descriptors с GAME OVER text params.</p>
+
+<pre><code><span class="kw">RenderFrame</span>:
+    <span class="kw">CALL</span> HideChainSprites          <span class="cmt">; все 70 chain TSU off-screen</span>
+    <span class="kw">CALL</span> UpdateExplodeSprites
+    <span class="kw">CALL</span> UpdateCursorSprite
+    <span class="kw">CALL</span> UpdateKzSkullSprite
+    <span class="kw">LD A</span>, (GameState)
+    <span class="kw">CP</span> 2
+    <span class="kw">CALL Z</span>, UpdateGameOverText      <span class="cmt">; override DESC_CHAIN0[0..4] в state 2</span>
+    <span class="kw">CALL</span> BlitKillzoneToShadow       <span class="cmt">; sun DMA</span>
+    <span class="kw">CALL</span> BlitChainToShadow          <span class="cmt">; chain DMA (= no-op в state 2, slots_len=0)</span>
+</code></pre>
+
+<p><b>Урок:</b> для feature специфической для одного game state, переиспользовать существующие descriptors часто проще чем выделять новые. Проверить только что descriptors конфликтующего use-case'а off-screen в этом state.</p>
+
 <h2 id="ports-ref">Приложение: список портов</h2>
 <pre><code><span class="cmt">; Видео и графика</span>
 VCONFIG    <span class="kw">EQU</span> <span class="num">#00AF</span>   <span class="cmt">; видеорежим</span>
