@@ -138,8 +138,8 @@ MAX_Y EQU 224                                    ; SCR_H - SPR_SIZE
 
 ; tiltspiral 5:4 (без letterbox) — smart crop tx[26..613], ty[0..470]
 ; gx=242 gy=248 → screen (132, 152) → top-left (100, 120)
-FROG_INIT_X EQU 100
-FROG_INIT_Y EQU 120
+FROG_INIT_X EQU 152        ; top-left frog 64×64 → center (184, 140) = spiral center (level 1)
+FROG_INIT_Y EQU 108
 
 MOUSE_INIT_X EQU FROG_INIT_X + 72                ; 220 — справа от жабы → стартовый угол ~0
 MOUSE_INIT_Y EQU FROG_INIT_Y + 32                ; 144 — центр жабы по Y (SPR_SIZE/2)
@@ -232,16 +232,37 @@ KZ_NUM_FRAMES         EQU 10
 KZ_FRAME_DELAY        EQU 4     ; кол-во game frames между transitions (= ~12 fps анимации)
 KZ_OPEN_DIST          EQU 96    ; trackpoint distance до kz, при котором рот начинает открываться (= 3 cells × 32)
 
-; "GAME OVER" text — 5 TSU sprites 64×64 в page #0D (full atlas).
-; TNUM = GAMEOVER_TNUM_BASE + N*8 (sprite N at carpet col N*8, full 8 cy rows).
-; SPAL=5 (red ball palette CRAM #50..#5F), idx 15 = bright red.
-GAMEOVER_TNUM_BASE    EQU 3584    ; 7*512 = page #0D start
-GAMEOVER_NUM_SPRITES  EQU 5
-GAMEOVER_SPRITE_W     EQU 64
-GAMEOVER_TEXT_W       EQU GAMEOVER_NUM_SPRITES * GAMEOVER_SPRITE_W   ; 320
-GAMEOVER_TEXT_X       EQU (CANVAS_W - GAMEOVER_TEXT_W) / 2           ; 20
-GAMEOVER_TEXT_Y       EQU (CANVAS_H - GAMEOVER_SPRITE_W) / 2          ; 112
-GAMEOVER_SPAL         EQU 5
+; Text overlays — GAME OVER + LEVEL INTRO. Один общий atlas-page #0D, контент
+; в нём перезаписывается DMA-копией из source-страниц при смене состояния:
+;   GAMEOVER_ATLAS_SRC_PAGE → #0D на state 1→2 transition
+;   LVLINTRO_ATLAS_SRC_PAGE → #0D в InitGame (для state 3 intro)
+; Source-страницы вне reach SGPAGE=6, но это OK — TSU читает только #0D.
+; LEVEL 1-1 — 5×64×64 в cx=0..39 cy=0..7 (TNUM 3584 + N*8).
+; SPIRAL OF DOOM — 5×64×32, scattered в cx=40..63 cy=0..7 (TNUMs 3624, 3632, 3640, 3880, 3888).
+; GAME OVER — 5×64×64 в cx=0..39 cy=0..7 (TNUM 3584 + N*8, как LEVEL 1-1).
+; SPAL=5 (custom red→yellow gradient palette).
+GAMEOVER_TNUM_BASE    EQU 3584   ; page #0D, cx=0..39 cy=0..7 после DMA-swap GAME OVER
+LVLINTRO_TNUM_BASE    EQU 3584   ; page #0D, cx=0..39 cy=0..7 после DMA-swap LEVEL INTRO
+GAMEOVER_ATLAS_SRC_PAGE EQU #50  ; source RAM page для GAME OVER atlas
+LVLINTRO_ATLAS_SRC_PAGE EQU #51  ; source RAM page для LEVEL INTRO atlas
+TEXT_NUM_SPRITES      EQU 5
+TEXT_SPRITE_W         EQU 64
+TEXT_SPRITE_H         EQU 64
+TEXT_W                EQU TEXT_NUM_SPRITES * TEXT_SPRITE_W   ; 320
+TEXT_X                EQU (CANVAS_W - TEXT_W) / 2             ; 20
+TEXT_Y                EQU (CANVAS_H - TEXT_SPRITE_H) / 2      ; 112
+TEXT_SPAL             EQU 5
+
+; SPIRAL OF DOOM subtitle — 5 sprites 64×32 при scattered TNUMs в page #0D
+; (cx=40..63, cy=0..7). Рендерим под LEVEL 1-1, screen Y = TEXT_Y + 64 + 8.
+SUBTITLE_SPRITE_H     EQU 32
+SUBTITLE_Y            EQU TEXT_Y + TEXT_SPRITE_H + 8          ; 184
+; Pre-computed TNUMs для каждого SP0..SP4: 3584 + cy*64 + cx.
+SUBTITLE_TNUM_0       EQU 3584 + 0*64 + 40   ; 3624
+SUBTITLE_TNUM_1       EQU 3584 + 0*64 + 48   ; 3632
+SUBTITLE_TNUM_2       EQU 3584 + 0*64 + 56   ; 3640
+SUBTITLE_TNUM_3       EQU 3584 + 4*64 + 40   ; 3880
+SUBTITLE_TNUM_4       EQU 3584 + 4*64 + 48   ; 3888
 KZ_PIX             EQU 64
 ROTATION_SPEED EQU 4
 
@@ -306,8 +327,9 @@ GameState:       DB 0
 AbsorbCounter:   DB 0   ; сколько шаров поглощено в state 1 (для статистики/render)
 GameOverTick:    DB 0   ; счётчик кадров в state 2
 HeadFlightTick:  DB 0   ; 0..FLIGHT_FRAMES — счётчик «полёта» головы к центру kz в state 1
-TmpGoX:          DW 0   ; current X в UpdateGameOverText loop
-TmpGoTNumOffs:   DB 0   ; current TNUM_L offset в UpdateGameOverText loop
+TmpGoX:          DW 0   ; current X в DrawTextOverlay loop
+TmpGoTNumOffs:   DB 0   ; current TNUM_L offset (sprite N * 8)
+TmpGoTNumBase:   DW 0   ; TNUM base (= GAMEOVER_TNUM_BASE или LVLINTRO_TNUM_BASE)
 
 ChainPrevDstA:    DS MAX_CHAIN_BALLS * 4
 ChainPrevValidA:  DS MAX_CHAIN_BALLS
@@ -486,8 +508,9 @@ UpdateGame:
     RET
 
 .ug_not_playing:
-    ; State 1 = absorbing 1:1 с Python emulator: 12× MoveChainAbsorb + AnimateChain.
-    ; State 2 = chain пуст, текст GAME OVER, через 200 кадров JP InitGame.
+    ; State 1 = absorbing, State 2 = GAME OVER text, State 3 = LEVEL X-X intro
+    CP 3
+    JP Z, .ug_state3
     CP 1
     JR NZ, .ug_state2
     LD B, FAST_ADVANCE
@@ -505,6 +528,9 @@ UpdateGame:
     XOR A
     LD (GameOverTick), A
     CALL LoadGameOverPalette          ; swap red ball palette → custom yellow+red gradient
+    ; DMA-копируем GAME OVER atlas (page #50) → #0D, перезаписывая LEVEL INTRO.
+    LD A, GAMEOVER_ATLAS_SRC_PAGE
+    CALL CopyAtlasToPageD
     JR .ug_kz_anim
 
 .ug_state2:
@@ -514,6 +540,18 @@ UpdateGame:
     CP 200                            ; ~4 сек @50fps в state 2 — пауза с пустой ареной
     JR C, .ug_kz_anim
     JP InitGame                       ; auto-restart: InitGame пере-инициализирует всё (GameState=0 сам внутри)
+
+.ug_state3:
+    ; State 3 = LEVEL 1-1 intro overlay. Tick counter, после ~150 кадров → state 0 (играем).
+    LD A, (GameOverTick)
+    INC A
+    LD (GameOverTick), A
+    CP 150                            ; ~3 сек @50fps intro
+    JR C, .ug_kz_anim
+    XOR A
+    LD (GameState), A                 ; → state 0 = playing
+    LD (GameOverTick), A
+    CALL RestoreRedBallPalette        ; intro закончен, цепочки нужна оригинальная палитра
 
 .ug_kz_anim:
     CALL UpdateKzFrame                ; kz mouth anim: full-open в state 1/2
@@ -562,9 +600,16 @@ RenderFrame:
     CALL UpdateExplodeSprites                ; перенесён early — иначе race с display refresh
     CALL UpdateCursorSprite
     CALL UpdateKzSkullSprite                 ; skull frame TNUM = base + KzFrame*4 (10 frames lose anim)
+    ; Текстовые overlay рендерятся из page #0D (single 16K atlas, реконфигурируется
+    ; DMA-копией при переходах состояний — см. CopyAtlasToPageD).
+    ; Initial content = LEVEL 1-1 + SPIRAL OF DOOM (= InitGame копирует level_intro).
+    ; State 1→2 transition копирует GAME OVER → page #0D.
     LD A, (GameState)
     CP 2
-    CALL Z, UpdateGameOverText               ; state 2: override DESC_CHAIN0[0..6] с TSU text sprites
+    CALL Z, UpdateGameOverText               ; state 2: GAME OVER overlay
+    LD A, (GameState)
+    CP 3
+    CALL Z, UpdateLevelIntroText             ; state 3: LEVEL 1-1 + SPIRAL OF DOOM
     CALL BlitKillzoneToShadow                ; kz first — chain DMA blit'ит шары ПОВЕРХ kz pixels.
     CALL BlitChainToShadow                   ; PASS1 restore читает golden (track+kz после OneTimeBlitKzToGolden
                                              ; в init), prev ball positions в kz-зоне восстанавливаются с kz pixels,
@@ -698,10 +743,17 @@ InitGame:
     LD (CompactTimer), A
     LD (GapStepCounter), A
     LD (FrameCounter), A
-    LD (GameState), A           ; 0 = playing
+    LD A, 3                     ; 3 = LEVEL 1-1 intro overlay (auto-transitions to play after 150 frames)
+    LD (GameState), A
+    XOR A
     LD (AbsorbCounter), A
     LD (GameOverTick), A
     LD (HeadFlightTick), A
+    CALL LoadGameOverPalette    ; Both intro и game over используют custom palette
+    ; Atlas page #0D = LEVEL 1-1 + SPIRAL OF DOOM (для state 3 intro).
+    ; DMA-копирует source page #51 → page #0D. Перезаписывает GAME OVER, если был.
+    LD A, LVLINTRO_ATLAS_SRC_PAGE
+    CALL CopyAtlasToPageD
     LD A, #FF
     LD (MatchScanIdx), A   ; "no scan pending"
 
@@ -782,8 +834,9 @@ InitGame:
     LD A, 1
     LD (ChainColorFirst), A               ; первый вызов RandomChainColor scramble через RTC
 
-    ; Уровень: количество цветов (TODO: брать из per-level config)
-    LD A, NUM_BALL_COLORS
+    ; Уровень: количество цветов (level 1 = 4 colors per ZumaHD settings/level1).
+    ; TODO: per-stage table — для 1-2..1-4 другие colors. Пока фиксированно для level 1-1.
+    LD A, 4
     LD (LevelNumColors), A
 
     ; Обнуляем ChainPrevValidA/B (DS не очищает память, мусор → BlitChain crash)
@@ -1666,7 +1719,13 @@ SpawnChainBall:
     JR NZ, .scb_avoid_done
     LD A, B
     INC A
-    CP NUM_BALL_COLORS
+    ; Compare against LevelNumColors (runtime), не compile-time NUM_BALL_COLORS=6.
+    ; Иначе на уровне с 4 цветами candidate+1 может стать 4 или 5 → юзер видит
+    ; цвета шаров за пределами LevelNumColors (= "5 colors на скриншоте").
+    PUSH HL
+    LD HL, LevelNumColors
+    CP (HL)
+    POP HL
     JR C, .scb_avoid_store
     XOR A
 .scb_avoid_store:
@@ -3930,42 +3989,130 @@ OneTimeBlitKzToGolden:
 ; SPAL=4 (yellow CRAM #40..#4F).
 ; ================================================================
 UpdateGameOverText:
+    LD HL, GAMEOVER_TNUM_BASE
+    JR DrawTextOverlay
+
+UpdateLevelIntroText:
+    ; Главный заголовок 64×64 LEVEL 1-1 (TNUM 3584+N*8).
+    LD HL, LVLINTRO_TNUM_BASE
+    CALL DrawTextOverlay
+    ; Подзаголовок SPIRAL OF DOOM 64×32 — 5 scattered sprites под LEVEL 1-1.
+    JP DrawSubtitleText
+
+; HL = TNUM_base. Draws TEXT_NUM_SPRITES sprites of 64×64 в DESC_CHAIN0[0..N-1].
+DrawTextOverlay:
+    LD (TmpGoTNumBase), HL
     LD BC, FMADDR : LD A, FM_EN : OUT (C), A
-    LD HL, GAMEOVER_TEXT_X
+    LD HL, TEXT_X
     LD (TmpGoX), HL
     XOR A
     LD (TmpGoTNumOffs), A
     LD HL, DESC_CHAIN0
-    LD B, GAMEOVER_NUM_SPRITES
-.uget_loop:
-    LD (HL), LOW(GAMEOVER_TEXT_Y) : INC HL          ; Y_L
-    LD (HL), HIGH(GAMEOVER_TEXT_Y) | SPACT | SPSIZ64 : INC HL  ; Y_H + ACT + SIZE64
+    LD B, TEXT_NUM_SPRITES
+.dto_loop:
+    LD (HL), LOW(TEXT_Y) : INC HL
+    LD (HL), HIGH(TEXT_Y) | SPACT | SPSIZ64 : INC HL    ; Y_H + ACT + SIZE64 vert
 
-    LD A, (TmpGoX)                                  ; X low byte
-    LD (HL), A : INC HL                             ; X_L
-    LD A, (TmpGoX+1)                                ; X high byte
+    LD A, (TmpGoX)
+    LD (HL), A : INC HL                                  ; X_L
+    LD A, (TmpGoX+1)
     AND 1
     OR SPSIZ64
-    LD (HL), A : INC HL                             ; X_H + SIZE64
+    LD (HL), A : INC HL                                  ; X_H + SIZE64 horiz
 
     LD A, (TmpGoTNumOffs)
-    ADD A, LOW(GAMEOVER_TNUM_BASE)                  ; LOW(3584)=0
-    LD (HL), A : INC HL                             ; TNUM_L
-    LD (HL), HIGH(GAMEOVER_TNUM_BASE) | (GAMEOVER_SPAL << 4)
-    INC HL                                          ; TNUM_H | SPAL<<4 = 0x0E|0x50 = 0x5E
+    LD DE, (TmpGoTNumBase)
+    ADD A, E
+    LD (HL), A : INC HL                                  ; TNUM_L = base_low + offset
+    LD A, D
+    AND #0F
+    OR TEXT_SPAL << 4                                    ; SPAL upper nibble
+    LD (HL), A : INC HL                                  ; TNUM_H | SPAL<<4
 
-    ; Advance: X += 64, TNUM_L += 8 (each 64×64 sprite = 8 cells wide)
     PUSH HL
     LD HL, (TmpGoX)
-    LD DE, GAMEOVER_SPRITE_W
+    LD DE, TEXT_SPRITE_W
     ADD HL, DE
     LD (TmpGoX), HL
     LD A, (TmpGoTNumOffs) : ADD A, 8 : LD (TmpGoTNumOffs), A
     POP HL
 
-    DJNZ .uget_loop
+    DJNZ .dto_loop
     LD BC, FMADDR : XOR A : OUT (C), A
     RET
+
+; ================================================================
+; DRAW SUBTITLE TEXT — "SPIRAL OF DOOM" 5 sprites 64×32 при scattered
+; TNUMs в page #0D (cx=40..63, cy=0..7). На экране размещены горизонтально
+; (5 × 64 = 320 px wide, центрированы) при Y = SUBTITLE_Y. SPAL=5.
+; Использует DESC_CHAIN0[5..9] (TEXT_NUM_SPRITES = 5 первых заняты главным).
+; ================================================================
+DrawSubtitleText:
+    LD BC, FMADDR : LD A, FM_EN : OUT (C), A
+    LD HL, DESC_CHAIN0 + TEXT_NUM_SPRITES * 6           ; descriptor offset = 5*6=30
+    LD IX, .subtitle_tnums
+    LD B, 5                                              ; 5 sprites
+    LD DE, TEXT_X                                        ; current screen X
+.dst_loop:
+    LD (HL), LOW(SUBTITLE_Y) : INC HL
+    LD (HL), HIGH(SUBTITLE_Y) | SPACT | SPSIZ32 : INC HL ; Y_H + ACT + SIZE32 vert (= 32 tall)
+
+    LD A, E
+    LD (HL), A : INC HL                                  ; X_L
+    LD A, D
+    AND 1
+    OR SPSIZ64
+    LD (HL), A : INC HL                                  ; X_H + SIZE64 horiz
+
+    LD A, (IX+0)
+    LD (HL), A : INC HL                                  ; TNUM_L from table
+    LD A, (IX+1)
+    AND #0F
+    OR TEXT_SPAL << 4
+    LD (HL), A : INC HL                                  ; TNUM_H | SPAL<<4
+
+    INC IX : INC IX
+    PUSH HL
+    LD HL, TEXT_SPRITE_W                                 ; +64 px
+    ADD HL, DE
+    EX DE, HL                                            ; DE = new X
+    POP HL
+    DJNZ .dst_loop
+    LD BC, FMADDR : XOR A : OUT (C), A
+    RET
+
+.subtitle_tnums:
+    DW SUBTITLE_TNUM_0
+    DW SUBTITLE_TNUM_1
+    DW SUBTITLE_TNUM_2
+    DW SUBTITLE_TNUM_3
+    DW SUBTITLE_TNUM_4
+
+; ================================================================
+; COPY ATLAS TO PAGE D — LDIR copy 16K из source page → page #0D через
+; временный swap slot 2 (= src) и slot 3 (= dst).
+; A = source page (#50 = GAME OVER, #51 = LEVEL INTRO).
+; DMA-режимы с прозрачностью src=0 не подходят: source-атлас содержит
+; много нулевых пикселей (background текста) → они не переписали бы
+; ячейки в page #0D, и предыдущий LEVEL 1-1 атлас просвечивал бы.
+; LDIR — full-byte copy, гарантированно перезаписывает.
+; DI обязательно: slot 3 временно мапится в #0D, стек (норм. в #C000+)
+; на время недоступен. После — restore slot 2=#02, slot 3=#0C.
+; ================================================================
+CopyAtlasToPageD:
+    DI
+    LD (.cat_src), A
+    LD A, (.cat_src) : LD BC, PAGE2 : OUT (C), A    ; slot 2 ← source page
+    LD A, #0D       : LD BC, PAGE3 : OUT (C), A     ; slot 3 ← dest page #0D
+    LD HL, #8000
+    LD DE, #C000
+    LD BC, #4000                                     ; 16K
+    LDIR
+    LD A, 2   : LD BC, PAGE2 : OUT (C), A           ; restore slot 2 = page 2
+    LD A, #0C : LD BC, PAGE3 : OUT (C), A           ; restore slot 3 = page #0C (track overflow + stack)
+    EI
+    RET
+.cat_src: DB 0
 
 CopyGoldenToShadow:
     LD BC, FMADDR : XOR A : OUT (C), A
@@ -5304,7 +5451,7 @@ RestoreRedBallPalette:
 FrogX:      DW FROG_INIT_X
 FrogY:      DW FROG_INIT_Y
 FrogAngle:  DB 0
-LevelNumColors: DB 6   ; runtime-число цветов на текущем уровне (1..NUM_BALL_COLORS).
+LevelNumColors: DB 4   ; level 1 = 4 colors (per ZumaHD levels.xml settings/level1)
                        ; RandomBallColor / RandomChainColor берут mod этого значения.
 NextBallColor: DB 0    ; цвет следующего выстрела (RandomBallColor: LFSR × RTC сек)
 BallColorSeed:  DW 0   ; seed LFSR для NextBallColor (init из RTC секунд)
@@ -5525,9 +5672,15 @@ TRACK_NUM_POINTS EQU (TrackEnd - TrackOverflow + 10596 - 2) / 4  ; = 3096
     ORG #6000                        ; byte 8192 of page = carpet cy=4
     INCBIN "kz_skull_atlas.bin"      ; 10 skull frames 32×32, carpet rows 4..7 (TNUM 2816+N*4)
 
-    ; GAME OVER text atlas в page 13 (=#D): 5 sprites × 64×64, carpet rows 0..7.
+    ; Text overlays — двойная буферизация:
+    ;   page #0D = active overlay (= page_d.bin). Reconfigurable DMA-copy при смене состояний.
+    ;   Initial content = LEVEL 1-1 + SPIRAL OF DOOM (для первого state 3 intro).
+    ;   page #50 = source GAME OVER atlas — подгружается напрямую через spgbld.ini.
+    ;   page #51 = source LEVEL INTRO atlas — подгружается напрямую через spgbld.ini.
+    ;   (sjasmplus PAGE limit = 0..63, поэтому SAVEBIN для #50/#51 невозможен —
+    ;    использовать готовые atlas-binaries через spgbld Block directive.)
     SLOT 1 : PAGE 13 : ORG #4000
-    INCBIN "gameover_text_atlas.bin" ; TNUM 3584 + N*8
+    INCBIN "level_intro_text_atlas.bin"  ; initial: LEVEL 1-1 + SPIRAL OF DOOM
 
     SLOT 1 : PAGE 5
 
@@ -5554,7 +5707,7 @@ TRACK_NUM_POINTS EQU (TrackEnd - TrackOverflow + 10596 - 2) / 4  ; = 3096
     SLOT 1 : PAGE 11
     SAVEBIN "page_b.bin", #4000, #4000    ; destroy frames + kz skull atlas — 16K
     SLOT 1 : PAGE 13
-    SAVEBIN "page_d.bin", #4000, #4000    ; gameover text atlas — 16K
+    SAVEBIN "page_d.bin", #4000, #4000    ; initial overlay = LEVEL 1-1 + SPIRAL OF DOOM
 
     LABELSLIST "user.l"
 

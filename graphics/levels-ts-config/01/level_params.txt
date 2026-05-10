@@ -1,0 +1,50 @@
+# Level 01 — Spiral of Doom (= Zuma Deluxe оригинальный level 1)
+# Параметры цепочки и темпа.
+# Соответствуют константам в zuma_new_spg.asm. После изменений → пересборка sjasmplus.
+# Оригинальные настройки из Zuma-Deluxe-HD/content/levels/levels.xml settings/level1.
+
+# ---------- Цепочка ----------
+chain_start_balls   = 35     # «поезд» — fast-фаза влёта (LEVEL_START_BALLS, оригинал level1: start=35) ✓
+chain_repeat_balls  = 50     # после fast — обычный темп (LEVEL_REPEAT_BALLS, оригинал level1: repeat=50) ✓
+chain_total_balls   = 85     # всего за уровень = start + repeat (LEVEL_TOTAL_BALLS)
+chain_max_alive     = 240    # максимум одновременно (физический лимит VDC, MAX_SLOTS_PER_CHAIN)
+
+# ---------- Цвета шаров ----------
+ball_colors         = 4      # level 1 = 4 colors (LevelNumColors). Оригинал ZumaHD level1: colors=4.
+
+# ---------- Скорость движения цепочки ----------
+fast_advance        = 12     # MoveChain'ов за тик в fast-фазе (FAST_ADVANCE).
+                             # @50fps → 12 hsub/tick × 50 = 600 hsub/sec ≈ 19 cells/sec ≈ 360 px/sec.
+                             # 35 шаров за ~1.8 сек.
+normal_subdivider   = 2      # после fast: MoveChain раз в N кадров = speed factor 0.5.
+                             # Оригинал ZumaHD level1: speed=0.5 ✓
+spawn_period_normal = 64     # 1 шар / N кадров в normal-phase.
+
+# ---------- Killzone ----------
+kz_open_dist        = 96     # mouth открывается когда head_dist до kz < этого (= 3 cells × CELL_SIZE).
+kz_anim_frame_delay = 4      # game frames между transition'ами frames anim (~12 fps mouth animation).
+absorbing_advance   = 12     # FAST_ADVANCE_ABSORB — темп цепи при поглощении в state 1 Game Over.
+
+# ---------- Frog position ----------
+frog_init_x         = 152    ; FROG_INIT_X — top-left позиция жабы 64×64
+frog_init_y         = 108    ; FROG_INIT_Y → frog center (184, 140) = центр спирали
+                             ; (подобрано вручную через click_picker.py + 2px down + 1px right)
+
+# ---------- Cell layout ----------
+cell_size           = 32     # CELL_SIZE — шаг между cell-aligned позициями в трекпоинтах.
+ball_diameter_px    = 20     # BALL_DIAMETER (DMA-burst), визуальный диаметр ball'а.
+
+# ---------- BG conversion ----------
+src_aspect          = 4:3    # source 640×480
+dst_aspect          = 5:4    # screen 360×288
+crop_x              = 20     # горизонтальный crop с обеих сторон → 600×480 (5:4)
+scale               = 0.6    # uniform 600×480 → 360×288
+
+# Файлы:
+#   src_bg.png              — оригинал bg 640×480 (Zuma Deluxe level_src_01.png)
+#   src_track.dat           — оригинал track HD (= Zuma-Deluxe-HD spiral.dat)
+#   scaled_bg.png           — bg после crop 640→600 (5:4) + scale 0.6 → 360×288
+#   quantized_bg_preview.png — после quantize 128 colors (как пишется в canvas)
+#   level_01.bin            — track scaled + resampled 1px (~2878 точек, killzone в конце)
+#   level_01_canvas_pal.bin — 128 colors CRAM #80..#FF (256 bytes)
+#   level_01_canvas_p0..p8.bin — 8bpp framebuffer 360×288 stride 512, 9 pages × 16K

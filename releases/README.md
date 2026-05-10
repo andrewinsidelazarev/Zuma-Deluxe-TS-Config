@@ -4,9 +4,19 @@
 
 ## Текущая версия
 
-**v13 (2026-05-10)** — `zuma_v13_2026-05-10_gameover_text.spg`
+**v14 (2026-05-11)** — `zuma_v14_2026-05-11_level1_4colors.spg`
 
-### Fixes 2026-05-10 (v13 — GAME OVER text + gradient palette dithering) — самые новые
+### Fixes 2026-05-11 (v14 — реальный Level 1 + 4 цвета + intro overlay + GAME OVER 64×64) — самые новые
+- **Реальный Level 1 "Spiral of Doom"** — bg импортирован из ZumaHD `level_src_01.png` (640×480) с crop 640→600 (5:4) + scale 0.6 → 360×288. Track из `spiral.dat` пропорционально (`(x-20)*0.6, y*0.6`).
+- **LevelNumColors=4** (per ZumaHD `levels.xml/level1`) — 4 цвета шаров. Раньше всегда 6.
+- **Anti-3-spawn-guard bug fix** — `CP NUM_BALL_COLORS` (compile-time 6) → `CP (LevelNumColors)` (runtime 4). Раньше candidate+1 при wrap'е мог стать 4/5 → юзер видел 5+ цветов на цепи вместо 4.
+- **LEVEL 1-1 intro overlay** — GameState=3 при InitGame, 150 кадров показывается "LEVEL 1-1" (5×64×64) + "SPIRAL OF DOOM" (5×64×32 subtitle) перед началом игры. Тот же gradient palette что у GAME OVER.
+- **GAME OVER 64×64** — увеличен до полного размера 5 sprites × 64×64 (раньше пробный 64×32).
+- **Atlas swap через LDIR** — page #0D = active overlay scratch buffer. Source pages #50 (GAME OVER) / #51 (LEVEL INTRO) → LDIR через временный slot 2/3 remap (DI/EI) при смене состояния. DMA с transparency src=0 не годилась — оставляла старые letters просвечивать.
+- **Frog calibration на Spiral of Doom** — FROG_INIT_X=152, FROG_INIT_Y=108 (centre 184,140) — через `click_picker.py` (tkinter + zoom 3x).
+- **levels-ts-config/01/ архив** — Spiral of Doom как self-contained папка: src_bg/src_track + scaled_bg + level_NN_canvas_*.bin + level_params.txt. Pipeline = `import_real_level1.py`.
+
+### Fixes 2026-05-10 (v13 — GAME OVER text + gradient palette dithering)
 - **GAME OVER text** — 5 TSU sprites 64×64 (= 320×64), centered на канвасе. Atlas в page #0D. TNUM_base=3584, sprite N → TNUM = base + N*8.
 - **Custom 15-color gradient palette** — `gameover_pal.bin` (red→orange→yellow, quadratic G interp). Загружается в SPAL=5 (red ball palette) при входе в state 2, восстанавливается через RestoreRedBallPalette в InitGame на restart.
 - **Nearest-color quantization** — antialised font edges (gradient pixels между red outline и yellow inner) автоматически маппятся в промежуточные palette indices = soft dithered transitions, без резких 2-color edges.
