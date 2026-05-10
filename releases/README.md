@@ -4,9 +4,25 @@
 
 ## Текущая версия
 
-**v7 (обновлено 2026-05-10)** — `zuma_v7_2026-05-10.spg`
+**v9 (обновлено 2026-05-10)** — `zuma_v9_2026-05-10_chain_tsu_gameover.spg`
 
-### Fixes 2026-05-09 / 10 (новые сверху)
+### Fixes 2026-05-10 (Game Over absorption) — новые
+- **Game Over state machine** — head ball Manhattan(KzCenter) < 16 → переход в state 1 (absorbing). Chain advance в темпе FAST_ADVANCE (как стартовая фаза появления цепи). Когда HSA достигает TRACK_NUM_SLOTS-1 — каждый тик shift Chain0_* arrays toward head + dec SlotsLen. SlotsLen=0 → state 2 (text TODO).
+- **Input lock в state 1/2** — HandleInput сразу RET если GameState != 0. Стрельба и frog rotation заблокированы во время absorption.
+- **GameState/AbsorbCounter** в #4015/16 (slot 1 page 5 first half, не SAVEBIN). InitGame явно зануляет — иначе random RAM на boot триггерит state machine.
+
+**Открытые после v9:**
+- Spawn-zone TSU rendering: balls вылетают не из-за края экрана (TSU не делает partial-clip как DMA chain в baseline relocated).
+- Tail ball пропадает при выстреле (insert artifact).
+
+### Fixes 2026-05-10 (chain-TSU + relocated vars)
+- **Chain рисуется через TSU layer 1 поверх canvas** — шар в killzone-зоне теперь корректно поверх killzone-картинки, без pavement-gap под ним. Раньше chain DMA + restore golden→shadow затирал killzone-pixels pavement'ом для prev ball positions.
+- **UpdateChainTSUSprites** — новая функция (по pattern UpdateExplodeSprites): TNUM=2304+COLOR×3, SPAL=COLOR+2, SPSIZ24=24×24. UpdateExplodeSprites override-ит destroy frame для exploding слотов как раньше.
+- **Chain DMA blit отключён** (RET в начале BlitChainToShadow). BcsGoldenOff setup сохранён до RET — его читает BlitKillzoneToShadow для restore golden→shadow.
+- **Variables relocated на ORG #4000** (page 5 first half) — все большие arrays (ChainPrev*/Bcs*) переехали в свободные 8K до main0.bin. Раньше straddle slot 1/2 boundary #8000 — любой shift кода в #6000+ ломал bg corruption. Теперь добавление функций безопасно.
+- **TSU 4-sprites-per-line — НЕ лимит TS-Conf**: 60+ sprites одновременно везде на экране без missing.
+
+### Fixes 2026-05-09 / 10
 - **Stack overlap TrackData** — root cause «false killzone V7» glitch. Stack at `#BFFF` затирал TrackData[2643..2648] (= точки трека на canvas (58,103)). Fix: stack перенесён в slot 3 page #0C (`LD SP, #FFFE`), 14KB safe zone после track_overflow.
 - **Stack canary "ZUM"** at `0xC800` — RenderFrame проверяет каждый кадр. Если затёрт (= stack overflowed) — bg pavement палитра становится ярко-красной, видно сразу.
 - **TrackData spillover** — page 2 (16K) не вмещает 12386 байт TrackData. Часть в slot 3 page #0C, читается через PAGE3=#0C. Killzone (track[3095]) теперь корректно достижим.
