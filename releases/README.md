@@ -4,7 +4,17 @@
 
 ## Текущая версия
 
-**v12 (2026-05-10)** — `zuma_v12_2026-05-10_kz_split.spg`
+**v13 (2026-05-10)** — `zuma_v13_2026-05-10_gameover_text.spg`
+
+### Fixes 2026-05-10 (v13 — GAME OVER text + gradient palette dithering) — самые новые
+- **GAME OVER text** — 5 TSU sprites 64×64 (= 320×64), centered на канвасе. Atlas в page #0D. TNUM_base=3584, sprite N → TNUM = base + N*8.
+- **Custom 15-color gradient palette** — `gameover_pal.bin` (red→orange→yellow, quadratic G interp). Загружается в SPAL=5 (red ball palette) при входе в state 2, восстанавливается через RestoreRedBallPalette в InitGame на restart.
+- **Nearest-color quantization** — antialised font edges (gradient pixels между red outline и yellow inner) автоматически маппятся в промежуточные palette indices = soft dithered transitions, без резких 2-color edges.
+- **SPSIZ40/48/56/64** константы добавлены — TS-Conf TSU поддерживает 8 размеров через 3-bit SIZE field. SPSIZ64 (#0E) используется для big text sprites.
+- **Skull relocated** — перенесён с page #0D на page_b cy=4..7 (после destroy_gfx). Освобождена вся page #0D под text atlas.
+- **InitGame palette restore** — CALL RestoreRedBallPalette в начале InitGame вернёт red ball палитру если был state 2 → restart.
+
+### Fixes 2026-05-10 (v12 — kz architectural split)
 
 ### Fixes 2026-05-10 (v12 — kz architectural split: sun DMA + skull TSU) — самые новые
 - **Sun rays** — DMA blit single static frame в canvas (killzone_top.bin/bot.bin pages #46/#47, sun-only без skull композита).

@@ -97,6 +97,10 @@ SPSIZ8   EQU #00    ; размер 8
 SPSIZ16  EQU #02    ; размер 16
 SPSIZ24  EQU #04    ; размер 24
 SPSIZ32  EQU #06    ; размер 32
+SPSIZ40  EQU #08    ; размер 40
+SPSIZ48  EQU #0A    ; размер 48
+SPSIZ56  EQU #0C    ; размер 56
+SPSIZ64  EQU #0E    ; размер 64
 SPACT    EQU #20    ; бит ACT — спрайт включён
 SPLEAP   EQU #40    ; «sprite is last in current layer» (на это полагаться нельзя
                     ; в нашей реализации — оставлено как константа, не используется)
@@ -218,7 +222,7 @@ BCS_PRESERVE        EQU 2    ; off-track / off-canvas → shadow не трога
 ; KzFrame теперь = TSU sprite frame index (0..9), управляет TNUM в DESC_KZSKULL.
 KILLZONE_DMA_PAGE_TOP EQU #46
 KILLZONE_DMA_PAGE_BOT EQU #47
-KZ_SKULL_TNUM_BASE    EQU 3584  ; (page #0D - SGPAGE #06) * 512 = 7 * 512 = 3584
+KZ_SKULL_TNUM_BASE    EQU 2816  ; page_b (#0B) cy=4: (#0B-#06)*512 + 4*64 = 2560+256 = 2816
 KZ_SKULL_SPAL         EQU 4     ; CRAM #40..#4F (yellow palette)
 ; Offset для skull относительно KzCenter (= track end). Sun имеет hole offset от
 ; визуального центра — корректируем здесь чтобы skull аккурат в центр sun-дырки.
@@ -227,6 +231,17 @@ KZ_SKULL_Y_OFFS       EQU 0
 KZ_NUM_FRAMES         EQU 10
 KZ_FRAME_DELAY        EQU 4     ; кол-во game frames между transitions (= ~12 fps анимации)
 KZ_OPEN_DIST          EQU 96    ; trackpoint distance до kz, при котором рот начинает открываться (= 3 cells × 32)
+
+; "GAME OVER" text — 5 TSU sprites 64×64 в page #0D (full atlas).
+; TNUM = GAMEOVER_TNUM_BASE + N*8 (sprite N at carpet col N*8, full 8 cy rows).
+; SPAL=5 (red ball palette CRAM #50..#5F), idx 15 = bright red.
+GAMEOVER_TNUM_BASE    EQU 3584    ; 7*512 = page #0D start
+GAMEOVER_NUM_SPRITES  EQU 5
+GAMEOVER_SPRITE_W     EQU 64
+GAMEOVER_TEXT_W       EQU GAMEOVER_NUM_SPRITES * GAMEOVER_SPRITE_W   ; 320
+GAMEOVER_TEXT_X       EQU (CANVAS_W - GAMEOVER_TEXT_W) / 2           ; 20
+GAMEOVER_TEXT_Y       EQU (CANVAS_H - GAMEOVER_SPRITE_W) / 2          ; 112
+GAMEOVER_SPAL         EQU 5
 KZ_PIX             EQU 64
 ROTATION_SPEED EQU 4
 
@@ -291,6 +306,8 @@ GameState:       DB 0
 AbsorbCounter:   DB 0   ; сколько шаров поглощено в state 1 (для статистики/render)
 GameOverTick:    DB 0   ; счётчик кадров в state 2
 HeadFlightTick:  DB 0   ; 0..FLIGHT_FRAMES — счётчик «полёта» головы к центру kz в state 1
+TmpGoX:          DW 0   ; current X в UpdateGameOverText loop
+TmpGoTNumOffs:   DB 0   ; current TNUM_L offset в UpdateGameOverText loop
 
 ChainPrevDstA:    DS MAX_CHAIN_BALLS * 4
 ChainPrevValidA:  DS MAX_CHAIN_BALLS
@@ -487,6 +504,7 @@ UpdateGame:
     LD (GameState), A
     XOR A
     LD (GameOverTick), A
+    CALL LoadGameOverPalette          ; swap red ball palette → custom yellow+red gradient
     JR .ug_kz_anim
 
 .ug_state2:
@@ -544,6 +562,9 @@ RenderFrame:
     CALL UpdateExplodeSprites                ; перенесён early — иначе race с display refresh
     CALL UpdateCursorSprite
     CALL UpdateKzSkullSprite                 ; skull frame TNUM = base + KzFrame*4 (10 frames lose anim)
+    LD A, (GameState)
+    CP 2
+    CALL Z, UpdateGameOverText               ; state 2: override DESC_CHAIN0[0..6] с TSU text sprites
     CALL BlitKillzoneToShadow                ; kz first — chain DMA blit'ит шары ПОВЕРХ kz pixels.
     CALL BlitChainToShadow                   ; PASS1 restore читает golden (track+kz после OneTimeBlitKzToGolden
                                              ; в init), prev ball positions в kz-зоне восстанавливаются с kz pixels,
@@ -634,6 +655,7 @@ IRQHandler:
 ; ИНИЦИАЛИЗАЦИЯ ИГРЫ
 ; ================================================================
 InitGame:
+    CALL RestoreRedBallPalette         ; restore SPAL=5 (могла быть swap'нута в state 2)
     ; Позиция лягушки — центр экрана с поправкой на canvas-сдвиг (SCR_OFFS).
     LD HL, FROG_INIT_X : LD (FrogX), HL
     LD HL, FROG_INIT_Y : LD (FrogY), HL
@@ -712,6 +734,8 @@ InitGame:
     LD (KzFrameLastBurned), A ; OneTimeBlitKzToGolden ниже выпекает frame 0
     LD A, 1
     LD (KzVisible), A
+
+    ; (Старый CRAM[#FE] hack удалён — text теперь через TSU sprites с yellow palette.)
     ; --- Chain0 slot-state: заполнить GAP_MARKER (= GAP_STOP), offsets/Shot2/scalars обнулить.
     LD HL, Chain0_Slots
     LD B, MAX_SLOTS_PER_CHAIN
@@ -3898,6 +3922,51 @@ OneTimeBlitKzToGolden:
     LD (ShadowPageBase), A
     RET
 
+; ================================================================
+; UPDATE GAME OVER TEXT — записывает 7 TSU sprites 32×32 в DESC_CHAIN0[0..6]
+; (= reuse chain TSU descriptors, в state 2 chain пуст и hidden). Каждый sprite =
+; одна 32-px секция текста "GAME OVER", вместе 7×32=224 px wide centered (X=68).
+; TNUM = GAMEOVER_TNUM_BASE + N*4 (sprite N в carpet col N*4 page #0D rows 4..7).
+; SPAL=4 (yellow CRAM #40..#4F).
+; ================================================================
+UpdateGameOverText:
+    LD BC, FMADDR : LD A, FM_EN : OUT (C), A
+    LD HL, GAMEOVER_TEXT_X
+    LD (TmpGoX), HL
+    XOR A
+    LD (TmpGoTNumOffs), A
+    LD HL, DESC_CHAIN0
+    LD B, GAMEOVER_NUM_SPRITES
+.uget_loop:
+    LD (HL), LOW(GAMEOVER_TEXT_Y) : INC HL          ; Y_L
+    LD (HL), HIGH(GAMEOVER_TEXT_Y) | SPACT | SPSIZ64 : INC HL  ; Y_H + ACT + SIZE64
+
+    LD A, (TmpGoX)                                  ; X low byte
+    LD (HL), A : INC HL                             ; X_L
+    LD A, (TmpGoX+1)                                ; X high byte
+    AND 1
+    OR SPSIZ64
+    LD (HL), A : INC HL                             ; X_H + SIZE64
+
+    LD A, (TmpGoTNumOffs)
+    ADD A, LOW(GAMEOVER_TNUM_BASE)                  ; LOW(3584)=0
+    LD (HL), A : INC HL                             ; TNUM_L
+    LD (HL), HIGH(GAMEOVER_TNUM_BASE) | (GAMEOVER_SPAL << 4)
+    INC HL                                          ; TNUM_H | SPAL<<4 = 0x0E|0x50 = 0x5E
+
+    ; Advance: X += 64, TNUM_L += 8 (each 64×64 sprite = 8 cells wide)
+    PUSH HL
+    LD HL, (TmpGoX)
+    LD DE, GAMEOVER_SPRITE_W
+    ADD HL, DE
+    LD (TmpGoX), HL
+    LD A, (TmpGoTNumOffs) : ADD A, 8 : LD (TmpGoTNumOffs), A
+    POP HL
+
+    DJNZ .uget_loop
+    LD BC, FMADDR : XOR A : OUT (C), A
+    RET
+
 CopyGoldenToShadow:
     LD BC, FMADDR : XOR A : OUT (C), A
     LD A, 256-1 : LD BC, DMALEN : OUT (C), A   ; burst = 256 words = 512 byte (1 строка)
@@ -5202,6 +5271,32 @@ InitPalette:
     LD BC, FMADDR : XOR A : OUT (C), A
     RET
 
+; ================================================================
+; LoadGameOverPalette — replace red ball palette (SPAL=5, CRAM #00A0..#00BF)
+; with custom yellow+red gradient. Called when entering state 2.
+; ================================================================
+LoadGameOverPalette:
+    LD BC, FMADDR : LD A, FM_EN : OUT (C), A
+    LD HL, GameOverPalette
+    LD DE, #00A0
+    LD BC, 32
+    LDIR
+    LD BC, FMADDR : XOR A : OUT (C), A
+    RET
+
+; ================================================================
+; RestoreRedBallPalette — копирует red ball палитру обратно из BallsPalette.
+; Called в InitGame чтобы после restart'а red ball был восстановлен.
+; ================================================================
+RestoreRedBallPalette:
+    LD BC, FMADDR : LD A, FM_EN : OUT (C), A
+    LD HL, BallsPalette + 96    ; offset red palette в BallsPalette (3*32)
+    LD DE, #00A0
+    LD BC, 32
+    LDIR
+    LD BC, FMADDR : XOR A : OUT (C), A
+    RET
+
 
 ; ================================================================
 ; ДАННЫЕ
@@ -5380,6 +5475,8 @@ BgCanvasPalette:
     INCBIN "level_01_canvas_pal.bin"  ; 256 байт = 128 цветов CRAM #0100..#01FF
 BallsDmaPalette:
     INCBIN "balls_dma_pal.bin"        ; 64 байта = 32 word, грузить в CRAM #80 (= byte offset 256)
+GameOverPalette:
+    INCBIN "gameover_pal.bin"         ; 32 байта = 16 CRAM words. Замещает red ball palette в state 2.
 
 ; Трек уровня. Spgbld page 2 ограничена 16K (0x8000-0xBFFF).
 ; Делим level_01.bin на 2 части: [0..N1] в slot 2 page 2, [N1..end] в slot 3 page #0C.
@@ -5422,8 +5519,15 @@ TRACK_NUM_POINTS EQU (TrackEnd - TrackOverflow + 10596 - 2) / 4  ; = 3096
 
     ; Destroy-frames в page 11 (=#B): carpet rows 40..47 (TNUM 2560..)
     ; 7 frames × 24×24 в первых 3 carpet-rows (rows 40..42).
+    ; После destroy в той же page — kz skull atlas (10 frames × 32×32, carpet rows 4..7).
     SLOT 1 : PAGE 11 : ORG #4000
     INCBIN "destroy_gfx.bin"         ; 7 frames × 24×24, carpet rows 40..42 (TNUM 2560..2580)
+    ORG #6000                        ; byte 8192 of page = carpet cy=4
+    INCBIN "kz_skull_atlas.bin"      ; 10 skull frames 32×32, carpet rows 4..7 (TNUM 2816+N*4)
+
+    ; GAME OVER text atlas в page 13 (=#D): 5 sprites × 64×64, carpet rows 0..7.
+    SLOT 1 : PAGE 13 : ORG #4000
+    INCBIN "gameover_text_atlas.bin" ; TNUM 3584 + N*8
 
     SLOT 1 : PAGE 5
 
@@ -5448,7 +5552,9 @@ TRACK_NUM_POINTS EQU (TrackEnd - TrackOverflow + 10596 - 2) / 4  ; = 3096
     SLOT 1 : PAGE 10
     SAVEBIN "page_a.bin", #4000, #4000    ; cursor+balls+preview — 16K
     SLOT 1 : PAGE 11
-    SAVEBIN "page_b.bin", #4000, #4000    ; destroy frames — 16K
+    SAVEBIN "page_b.bin", #4000, #4000    ; destroy frames + kz skull atlas — 16K
+    SLOT 1 : PAGE 13
+    SAVEBIN "page_d.bin", #4000, #4000    ; gameover text atlas — 16K
 
     LABELSLIST "user.l"
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Skull TSU atlas — 10 frames 32×32, 4bpp carpet layout. Размещается в page #0D
-(= TNUM offset 3584 от SGPAGE=#06). Палитра yellow CRAM #40..#4F (= SPAL=4).
-
-Atlas format: 4bpp tile-major carpet (как convert_balls24.py).
-Frame N: cy=0, cx=N*4, TNUM_local=N*4, TNUM_global=3584+N*4.
+"""Skull TSU atlas — 10 frames 32×32, 4bpp carpet. Размещается в page #0B
+(= page_b после destroy_gfx) в byte offset 8192 = carpet cy=4 of page.
+TNUM_global = 5*512 + 4*64 + N*4 = 2816 + 4*N.
+Output bin = 8K (= 4 carpet rows). INCBIN'ится в asm после destroy_gfx.bin.
 """
 import os
 import numpy as np
@@ -20,6 +19,7 @@ NUM_FRAMES = 10
 YELLOW_K = 2
 COLORS_PER_PAL = 16
 PAGE = 16384
+PAGE_BYTES_OUT = 8192   # 4 carpet rows = только skull (без destroy и без padding)
 
 def cram_to_rgb(b0, b1):
     word = b0 | (b1 << 8)
@@ -40,7 +40,7 @@ def get_idx(r, g, b, a):
     return int(np.argmin(diffs))
 
 src = Image.open(SRC).convert('RGBA')
-gfx = bytearray(PAGE)        # 16K page
+gfx = bytearray(PAGE_BYTES_OUT)   # 8K = 4 carpet rows (= skull only, INCBIN'ится в page_b)
 
 for fi in range(NUM_FRAMES):
     sprite_row = fi + 1
