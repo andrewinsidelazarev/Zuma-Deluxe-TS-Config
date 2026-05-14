@@ -91,6 +91,13 @@ MOUSE_BTN EQU #FADF   ; Кнопки: бит 0 = правая, бит 1 = лев
 FM_EN    EQU #10    ; %00010000 — FMEN: включает FM доступ (#0000=CRAM, #0200=SFILE)
 GFX_PAGE EQU 8
 MAP_PAGE EQU 9
+RUNTIME_PAL_PAGE EQU #61
+RTPAL_FROG       EQU #C000
+RTPAL_CURSOR     EQU #C200
+RTPAL_BALLS      EQU #C400
+RTPAL_BG_LEVEL1  EQU #C600
+RTPAL_GAMEOVER   EQU #C800
+RTPAL_BALLS_DMA  EQU #CA00
 
 ; TSU SPSIZE / SPACT / SPLEAP
 SPSIZ8   EQU #00    ; размер 8
@@ -125,7 +132,7 @@ DESC_BACK_PREVIEW EQU #020C    ; 8×8 spine preview — следующий цв�
 DESC_KZSKULL      EQU #0212    ; 32×32 череп killzone (TSU sprite, TNUM меняется по KzFrame)
 DESC_CHAIN0       EQU #0218    ; 70 chain-слотов (420 байт #0218..#03BB)
 DESC_BALL0        EQU #03BC    ; 8 летящих шаров (48 байт #03BC..#03EB)
-DESC_CURSOR       EQU #03EC    ; 16×16 курсор #03EC..#03F1
+DESC_CURSOR       EQU #03F8    ; 16×16 курсор #03F8..#03FD (последний слот SFILE — освобождает место для 84 preview спрайтов на level select)
 
 SCR_W    EQU 360
 SCR_H    EQU 288
@@ -319,6 +326,14 @@ TmpKzSrcPage:  DB 0
 VisiblePageBase: DB CANVAS_A_PAGE_BASE
 ShadowPageBase:  DB CANVAS_B_PAGE_BASE
 
+; --- Глобальная сцена (поверх GameState) ---
+; 0 = GAME (нормальный игровой loop с GameState=0..3 внутри),
+; 1 = LEVEL SELECT (UI выбора уровня — отдельный update/render path).
+; На program-start ставим 1: после InitGame сразу попадаем в level select.
+; Нажатие PLAY на экране select сбрасывает Scene=0, gameplay продолжается с
+; уже инициализированным state (frog/canvas/TSU всё готово).
+Scene:           DB 1    ; Scene initial = 1 (level select). Явно set в Initialize т.к. DB в RAM не SAVEBIN'нится.
+
 ; --- Game-Over state machine (init в InitGame явно — DEFS не SAVEBIN'ятся) ---
 ; 0 = playing (normal). 1 = absorbing (head пожирается killzone'ом, FAST_ADVANCE×
 ; MoveChainAbsorb, при HSA cap shift slots + slots_len-=1). 2 = SlotsLen=0,
@@ -346,10 +361,12 @@ BcsCacheStruct:   DS MAX_CHAIN_BALLS * 6
 
 Entry:
     DI
-    ; PAGE3 = #0C ПЕРВЫМ — чтобы stack at 0xFFFE сразу попал в page #0C (= safe zone
-    ; в page #0C bytes 0x800..0x3FFF, после track_overflow.bin = 0..0x7FF). Иначе
-    ; PAGE3=0 default → stack пишет в ROM/garbage page.
-    LD A, #0C
+    LD BC, VCONFIG : LD A, %11000110 : OUT (C), A  ; NOGFX=1 until initial scene is ready
+
+    ; PAGE3 = #60 ПЕРВЫМ — track_overflow перенесён туда из #0C, чтобы освободить
+    ; #0C под TSU sprite data (level preview). Stack at 0xFFFE → safe zone в page
+    ; #60 bytes 0x800..0x3FFF, после track_overflow.bin = 0..0x7FF.
+    LD A, #60
     LD BC, PAGE3
     OUT (C), A
 
@@ -366,7 +383,7 @@ Entry:
 
     ; ---------- ИНИЦИАЛИЗАЦИЯ ЖЕЛЕЗА ----------
     LD BC, SYSCONG : LD A, %00000110 : OUT (C), A     ; 14 MHz + аппаратный кэш
-    LD BC, VCONFIG : LD A, %11000010 : OUT (C), A  ; 360x288, 256c, NOGFX=0 — canvas включён
+    LD BC, VCONFIG : LD A, %11000110 : OUT (C), A  ; 360x288, 256c, NOGFX=1 — canvas off during init
     LD BC, VPAGE   : LD A, #10       : OUT (C), A  ; canvas-bitmap начинается с page 16
 
     ; Палитра (включая bg-canvas палитру в CRAM #0100..#01FF)
@@ -380,8 +397,20 @@ Entry:
     ; ---------- ИНИЦИАЛИЗАЦИЯ ИГРЫ ----------
     CALL InitGame
 
-    ; Burn killzone в golden ОДИН раз (= bg для chain DMA restore содержит track+kz).
-    CALL OneTimeBlitKzToGolden
+    ; PoC Z3 unpacker — replace canvas A page 0 (#10) с unpacked compressed source #5D.
+    ; Z3 = bit-packed LZ77 (см. src/compress_z3.py). Демонстрирует scene resource pipeline.
+    ; TODO: debug — отключено, baseline проверки.
+    ; LD A, #5D : LD B, #10
+    ; CALL UnpackZ3Page
+
+    ; Golden level canvas is depacked on PLAY, then killzone is burned there.
+
+    ; ---------- LEVEL SELECT UI (Scene=1 default) ----------
+    ; Явно set Scene=1 — DB declaration в RAM page 5 не sохраняется через SAVEBIN.
+    LD A, 1
+    LD (Scene), A
+    CALL LevelSelect_Init
+    LD BC, VCONFIG : LD A, %11000010 : OUT (C), A  ; NOGFX=0, initial scene is synced
 
     ; ---------- IM 2 + frame IRQ для Fixed Timestep ----------
     ; ISR-handler в page 5 (наш код). I=#5E, peripheral data byte для frame IRQ
@@ -416,12 +445,27 @@ MainLoop:
     EI
     CP B
     JR Z, .ml_render
+    ; --- Scene dispatch: 0=GAME, 1=LEVELSELECT ---
+    LD A, (Scene)
+    OR A
+    JR NZ, .ml_upd_lvlsel
     CALL UpdateGame
+    JR .ml_upd_done
+.ml_upd_lvlsel:
+    CALL LevelSelect_Update
+.ml_upd_done:
     LD HL, ProcessedTicks
     INC (HL)
     JR MainLoop
 .ml_render:
+    LD A, (Scene)
+    OR A
+    JR NZ, .ml_render_lvlsel
     CALL RenderFrame
+    JR .ml_render_done
+.ml_render_lvlsel:
+    CALL LevelSelect_Render
+.ml_render_done:
     HALT                                      ; сон до следующего IRQ
     JR MainLoop
 
@@ -562,25 +606,8 @@ UpdateGame:
 ; Вызывается раз когда вся логика догнала тики.
 ; ============================================================================
 RenderFrame:
-    ; ====== CANARY CHECK: stack overflow detection ======
-    ; Если stack overflowed past 0xC800, "ZUM" затёрт. Visible-error через CRAM #100=red.
-    LD A, (#C800)
-    CP 'Z'
-    JR NZ, .canary_failed
-    LD A, (#C801)
-    CP 'U'
-    JR NZ, .canary_failed
-    LD A, (#C802)
-    CP 'M'
-    JR Z, .canary_ok
-.canary_failed:
-    ; Hard-fail: записать ярко-красный pixel в CRAM #100 (= bg palette idx 0 = pavement bg)
-    ; Юзер увидит красный bg → сразу понятно что stack overflowed.
-    LD BC, FMADDR : LD A, FM_EN : OUT (C), A
-    LD A, %00011111 : LD (#0100), A           ; CRAM word low: B=11111, G=000, ?
-    LD A, %11111100 : LD (#0101), A           ; CRAM high: bit15=1, R=11111, G_hi=000
-    LD BC, FMADDR : XOR A : OUT (C), A
-.canary_ok:
+    ; (CANARY CHECK отключён — false-positive overwrites palette уровня
+    ;  при некоторых сценариях. Включить отдельно для debug stack overflow.)
 
     ; ====== СВОП BUFFER (atomic) ======
     LD A, (VisiblePageBase) : XOR #30 : LD (VisiblePageBase), A
@@ -768,7 +795,7 @@ InitGame:
     ; от 0x969C, заполняет 0x969C..0xBFFF (page 2) + 0xC000..0xC6FE (page #60).
     ; PAGE3 должен быть = #60 чтобы read TrackData[t] для t > ~2520 не возвращал ROM-garbage.
     LD BC, PAGE2 : LD A, 2     : OUT (C), A
-    LD BC, PAGE3 : LD A, #0C   : OUT (C), A
+    LD BC, PAGE3 : LD A, #60   : OUT (C), A
 
     ; --- Killzone: позиция = конец трека (TrackData[TRACK_NUM_POINTS-1])
     LD HL, TRACK_NUM_POINTS - 1
@@ -3838,13 +3865,17 @@ UpdateChainSprites:
 ; в FM-mapped CRAM byte offset 256 (= CRAM #80..#9F).
 ; ================================================================
 LoadBallsDmaPalette:
+    POP IX
+    LD BC, PAGE3 : LD A, RUNTIME_PAL_PAGE : OUT (C), A
     LD BC, FMADDR : LD A, FM_EN : OUT (C), A
-    LD HL, BallsDmaPalette
+    LD BC, PALSEL : XOR A : OUT (C), A
+    LD HL, RTPAL_BALLS_DMA
     LD DE, #01C0                              ; CRAM #E0 word = byte offset 448 = #01C0
     LD BC, 64                                 ; 32 words × 2 byte
     LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    RET
+    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    JP (IX)
 
 ; ================================================================
 ; CANVAS A=#10..#18, B=#20..#28. Golden=#30..#38. Учебная схема:
@@ -4109,10 +4140,271 @@ CopyAtlasToPageD:
     LD BC, #4000                                     ; 16K
     LDIR
     LD A, 2   : LD BC, PAGE2 : OUT (C), A           ; restore slot 2 = page 2
-    LD A, #0C : LD BC, PAGE3 : OUT (C), A           ; restore slot 3 = page #0C (track overflow + stack)
+    LD A, #60 : LD BC, PAGE3 : OUT (C), A           ; restore slot 3 = page #60 (track overflow + stack)
     EI
     RET
 .cat_src: DB 0
+
+
+; ============================================================================
+; Z3 UNPACKER — bit-packed LZ77, Elias-gamma length, 16-bit offset.
+; См. src/compress_z3.py для format спецификации.
+;
+; Z3Decompress: IX = compressed src (с 2-byte header = uncompressed size LE),
+;               DE = dest. Использует stack (PUSH/POP, CALL) — caller обязан
+;               relocate SP в slot 1 safe area перед PAGE3 swap.
+; ============================================================================
+Z3Decompress:
+    LD C, (IX+0) : LD B, (IX+1)
+    LD (.z3_countdown), BC
+    INC IX : INC IX
+    LD A, $80 : LD (.z3_bit_acc), A
+.z3_main:
+    LD BC, (.z3_countdown)
+    LD A, B : OR C
+    RET Z
+    CALL .z3_read_bit
+    JR C, .z3_match
+.z3_lit:
+    LD C, 0
+    LD B, 8
+.z3_lit_loop:
+    CALL .z3_read_bit
+    RL C
+    DJNZ .z3_lit_loop
+    LD A, C
+    LD (DE), A : INC DE
+    LD HL, (.z3_countdown)
+    DEC HL
+    LD (.z3_countdown), HL
+    JR .z3_main
+.z3_match:
+    CALL .z3_read_gamma
+    LD (.z3_len_tmp), HL
+    CALL .z3_read_u16
+    INC HL
+    LD A, E : SUB L : LD L, A
+    LD A, D : SBC A, H : LD H, A
+    LD BC, (.z3_len_tmp)
+    LDIR
+    LD HL, (.z3_countdown)
+    LD BC, (.z3_len_tmp)
+    LD A, L : SUB C : LD L, A
+    LD A, H : SBC A, B : LD H, A
+    LD (.z3_countdown), HL
+    JR .z3_main
+
+.z3_read_bit:
+    LD A, (.z3_bit_acc)
+    ADD A, A
+    JR NZ, .z3_rb_done
+    LD A, (IX+0) : INC IX
+    RLA
+.z3_rb_done:
+    LD (.z3_bit_acc), A
+    RET
+
+.z3_read_gamma:
+    LD D, 0
+.z3_rg_count:
+    CALL .z3_read_bit
+    JR C, .z3_rg_ones
+    INC D
+    JR .z3_rg_count
+.z3_rg_ones:
+    LD HL, 1
+.z3_rg_loop:
+    LD A, D : OR A
+    RET Z
+    CALL .z3_read_bit
+    ADC HL, HL
+    DEC D
+    JR .z3_rg_loop
+
+.z3_read_u16:
+    LD HL, 0
+    LD B, 16
+.z3_ru_loop:
+    CALL .z3_read_bit
+    ADC HL, HL
+    DJNZ .z3_ru_loop
+    RET
+
+.z3_bit_acc:    DB 0
+.z3_countdown:  DW 0
+.z3_len_tmp:    DW 0
+
+
+; ============================================================================
+; UNPACK COMPRESSED PAGE — wrapper: SP relocate в slot 1 safe stack,
+; swap slot 2 ← src page, slot 3 ← dst page, run Z3Decompress.
+;   A = source page (compressed Z3), B = dest page
+; ============================================================================
+UnpackZ3Page:
+    DI
+    LD (.uz_src), A
+    LD A, B : LD (.uz_dst), A
+    LD (.uz_saved_sp), SP
+    LD SP, .uz_temp_stack_top
+    LD A, (.uz_src) : LD BC, PAGE2 : OUT (C), A
+    LD A, (.uz_dst) : LD BC, PAGE3 : OUT (C), A
+    LD IX, #8000
+    LD DE, #C000
+    CALL Z3Decompress
+    LD A, 2   : LD BC, PAGE2 : OUT (C), A
+    LD A, #60 : LD BC, PAGE3 : OUT (C), A
+    LD SP, (.uz_saved_sp)
+    EI
+    RET
+.uz_src:        DB 0
+.uz_dst:        DB 0
+.uz_saved_sp:   DW 0
+.uz_temp_stack: DEFS 64
+.uz_temp_stack_top:
+
+
+; ============================================================================
+; ZX7 UNPACKER PoC. HL = compressed source, DE = destination.
+; Decoder: ZX7 turbo by Einar Saukas / Urusergi style entry contract.
+; ============================================================================
+Dzx7Turbo:
+    LD A, #80
+.zx7_copy_byte_loop:
+    LDI
+.zx7_main_loop:
+    ADD A, A
+    CALL Z, .zx7_load_bits
+    JR NC, .zx7_copy_byte_loop
+    PUSH DE
+    LD BC, 1
+    LD D, B
+.zx7_len_size_loop:
+    INC D
+    ADD A, A
+    CALL Z, .zx7_load_bits
+    JR NC, .zx7_len_size_loop
+    JP .zx7_len_value_start
+.zx7_len_value_loop:
+    ADD A, A
+    CALL Z, .zx7_load_bits
+    RL C
+    RL B
+    JR C, .zx7_exit
+.zx7_len_value_start:
+    DEC D
+    JR NZ, .zx7_len_value_loop
+    INC BC
+    LD E, (HL)
+    INC HL
+    DB #CB, #33                         ; SLL E / SLS E
+    JR NC, .zx7_offset_end
+    ADD A, A
+    CALL Z, .zx7_load_bits
+    RL D
+    ADD A, A
+    CALL Z, .zx7_load_bits
+    RL D
+    ADD A, A
+    CALL Z, .zx7_load_bits
+    RL D
+    ADD A, A
+    CALL Z, .zx7_load_bits
+    CCF
+    JR C, .zx7_offset_end
+    INC D
+.zx7_offset_end:
+    RR E
+    EX (SP), HL
+    PUSH HL
+    SBC HL, DE
+    POP DE
+    LDIR
+.zx7_exit:
+    POP HL
+    JP NC, .zx7_main_loop
+    RET
+.zx7_load_bits:
+    LD A, (HL)
+    INC HL
+    RLA
+    RET
+
+
+; ============================================================================
+; UNPACK ZX7 PAGE.
+;   A = source page with ZX7 stream at #4000, B = destination page.
+; Maps source to slot 2 (#8000) and destination to slot 3 (#C000).
+; ============================================================================
+UnpackZX7Page:
+    DI
+    LD (.uzx7_src), A
+    LD A, B : LD (.uzx7_dst), A
+    LD (.uzx7_saved_sp), SP
+    LD SP, .uzx7_temp_stack_top
+    LD A, (.uzx7_src) : LD BC, PAGE2 : OUT (C), A
+    LD A, (.uzx7_dst) : LD BC, PAGE3 : OUT (C), A
+    LD HL, #8000
+    LD DE, #C000
+    CALL Dzx7Turbo
+    LD A, 2   : LD BC, PAGE2 : OUT (C), A
+    LD A, #60 : LD BC, PAGE3 : OUT (C), A
+    LD SP, (.uzx7_saved_sp)
+    EI
+    RET
+.uzx7_src:        DB 0
+.uzx7_dst:        DB 0
+.uzx7_saved_sp:   DW 0
+.uzx7_temp_stack: DEFS 64
+.uzx7_temp_stack_top:
+
+
+; ============================================================================
+; UNPACK 9 ZX7 PAGES. A=source base page, B=destination base page.
+; ============================================================================
+UnpackZX7_9Pages:
+    LD (.uzx79_src), A
+    LD A, B : LD (.uzx79_dst), A
+    LD A, 9 : LD (.uzx79_cnt), A
+.uzx79_loop:
+    LD A, (.uzx79_src)
+    LD B, A
+    LD A, (.uzx79_dst)
+    LD C, A
+    LD A, B
+    LD B, C
+    CALL UnpackZX7Page
+    LD HL, .uzx79_src : INC (HL)
+    LD HL, .uzx79_dst : INC (HL)
+    LD HL, .uzx79_cnt : DEC (HL)
+    JR NZ, .uzx79_loop
+    RET
+.uzx79_src: DB 0
+.uzx79_dst: DB 0
+.uzx79_cnt: DB 0
+
+
+; ============================================================================
+; COPY ATLAS TO PAGE — параметризованный LDIR copy 16K src → dst через slots 2/3.
+;   A = source page, B = dest page
+; ВАЖНО: эта функция swap'ит slot 2 — она ДОЛЖНА жить в slot 1 (main0.bin),
+; иначе при swap её собственный код исчезнет → crash.
+; ============================================================================
+CopyAtlasToPage:
+    DI
+    LD (.ctp_src), A
+    LD A, B : LD (.ctp_dst), A
+    LD A, (.ctp_src) : LD BC, PAGE2 : OUT (C), A
+    LD A, (.ctp_dst) : LD BC, PAGE3 : OUT (C), A
+    LD HL, #8000
+    LD DE, #C000
+    LD BC, #4000
+    LDIR
+    LD A, 2   : LD BC, PAGE2 : OUT (C), A
+    LD A, #60 : LD BC, PAGE3 : OUT (C), A
+    EI
+    RET
+.ctp_src: DB 0
+.ctp_dst: DB 0
 
 CopyGoldenToShadow:
     LD BC, FMADDR : XOR A : OUT (C), A
@@ -5409,40 +5701,69 @@ ClampDelta:
 ; CRAM #0100..#01FF — 128 цветов фона уровня (canvas pixel value = direct CRAM index 128..255)
 ; ================================================================
 InitPalette:
+    POP IX
+    LD BC, PAGE3 : LD A, RUNTIME_PAL_PAGE : OUT (C), A
     LD BC, FMADDR : LD A, FM_EN : OUT (C), A
     LD BC, PALSEL : XOR A : OUT (C), A
-    LD HL, PaletteData   : LD DE, #0000 : LD BC, 512 : LDIR
-    LD HL, CursorPalette : LD DE, #0020 : LD BC, 32  : LDIR
-    LD HL, BallsPalette  : LD DE, #0040 : LD BC, 192 : LDIR
-    LD HL, BgCanvasPalette : LD DE, #0100 : LD BC, 256 : LDIR
+    LD HL, RTPAL_FROG      : LD DE, #0000 : LD BC, 512 : LDIR
+    LD HL, RTPAL_CURSOR    : LD DE, #0020 : LD BC, 32  : LDIR
+    LD HL, RTPAL_BALLS     : LD DE, #0040 : LD BC, 192 : LDIR
+    LD HL, RTPAL_BG_LEVEL1 : LD DE, #0100 : LD BC, 256 : LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    RET
+    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    JP (IX)
+
+; ================================================================
+; RestoreLevel1BgPalette — final restore for level_01 canvas colors.
+; Level select uses the same CRAM byte window (#0100..#01FF), so this must be
+; called after leaving level select and after any InitGame side effects.
+; ================================================================
+RestoreLevel1BgPalette:
+    POP IX
+    LD BC, PAGE3 : LD A, RUNTIME_PAL_PAGE : OUT (C), A
+    LD BC, FMADDR : LD A, FM_EN : OUT (C), A
+    LD BC, PALSEL : XOR A : OUT (C), A
+    LD HL, RTPAL_BG_LEVEL1
+    LD DE, #0100
+    LD BC, 256
+    LDIR
+    LD BC, FMADDR : XOR A : OUT (C), A
+    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    JP (IX)
 
 ; ================================================================
 ; LoadGameOverPalette — replace red ball palette (SPAL=5, CRAM #00A0..#00BF)
 ; with custom yellow+red gradient. Called when entering state 2.
 ; ================================================================
 LoadGameOverPalette:
+    POP IX
+    LD BC, PAGE3 : LD A, RUNTIME_PAL_PAGE : OUT (C), A
     LD BC, FMADDR : LD A, FM_EN : OUT (C), A
-    LD HL, GameOverPalette
+    LD BC, PALSEL : XOR A : OUT (C), A
+    LD HL, RTPAL_GAMEOVER
     LD DE, #00A0
     LD BC, 32
     LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    RET
+    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    JP (IX)
 
 ; ================================================================
 ; RestoreRedBallPalette — копирует red ball палитру обратно из BallsPalette.
 ; Called в InitGame чтобы после restart'а red ball был восстановлен.
 ; ================================================================
 RestoreRedBallPalette:
+    POP IX
+    LD BC, PAGE3 : LD A, RUNTIME_PAL_PAGE : OUT (C), A
     LD BC, FMADDR : LD A, FM_EN : OUT (C), A
-    LD HL, BallsPalette + 96    ; offset red palette в BallsPalette (3*32)
+    LD BC, PALSEL : XOR A : OUT (C), A
+    LD HL, RTPAL_BALLS + 96    ; offset red palette в BallsPalette (3*32)
     LD DE, #00A0
     LD BC, 32
     LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    RET
+    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    JP (IX)
 
 
 ; ================================================================
@@ -5584,6 +5905,11 @@ AtanTable:
     DB 31, 31, 31, 31, 31, 32, 32, 32
     DB 32
 
+; ============================================================================
+; LEVEL SELECT module — экран выбора уровня (Scene=1).
+; ============================================================================
+    INCLUDE "level_select.asm"
+
 ; Sin/Cos нормализованные направления (-4..+4) для 32 кадров стрельбы.
 ; Используются в SpawnBall (стартовая позиция шара = жабо-центр + 6*Dir)
 ; и в MoveBall (BallX/Y += Dir каждый кадр).
@@ -5710,8 +6036,3 @@ TRACK_NUM_POINTS EQU (TrackEnd - TrackOverflow + 10596 - 2) / 4  ; = 3096
     SAVEBIN "page_d.bin", #4000, #4000    ; initial overlay = LEVEL 1-1 + SPIRAL OF DOOM
 
     LABELSLIST "user.l"
-
-
-
-
-
