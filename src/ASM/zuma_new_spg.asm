@@ -398,7 +398,7 @@ Entry:
     CALL InitGame
 
     ; PoC Z3 unpacker — replace canvas A page 0 (#10) с unpacked compressed source #5D.
-    ; Z3 = bit-packed LZ77 (см. src/compress_z3.py). Демонстрирует scene resource pipeline.
+    ; Z3 = bit-packed LZ77 (см. src/Python/compress_z3.py). Демонстрирует scene resource pipeline.
     ; TODO: debug — отключено, baseline проверки.
     ; LD A, #5D : LD B, #10
     ; CALL UnpackZ3Page
@@ -4148,7 +4148,7 @@ CopyAtlasToPageD:
 
 ; ============================================================================
 ; Z3 UNPACKER — bit-packed LZ77, Elias-gamma length, 16-bit offset.
-; См. src/compress_z3.py для format спецификации.
+; См. src/Python/compress_z3.py для format спецификации.
 ;
 ; Z3Decompress: IX = compressed src (с 2-byte header = uncompressed size LE),
 ;               DE = dest. Использует stack (PUSH/POP, CALL) — caller обязан

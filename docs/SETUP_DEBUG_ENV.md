@@ -93,6 +93,23 @@ Desktop/Zuma Deluxe VDAC2/
 └── zuma_vdac2.sym             # symbol table
 ```
 
+### Альтернатива: всё из TS-Conf GitHub репо
+
+Все упомянутые эмуляторы и harness'ы также опубликованы в TS-Conf репо как референсные копии:
+
+```
+https://github.com/andrewinsidelazarev/Zuma-Deluxe-TS-Config/tree/main/src/Python/
+├── zuma_ts_emulator.py
+├── zuma_full_z80_emulator.py     # VDAC2 emulator (reference copy)
+├── zuma_z80_simulator.py         # VDAC2 simple (reference copy)
+├── vdc_visual_emulator.py        # chain physics tkinter
+├── visual_emulator.py            # frog tkinter (reference copy)
+├── full_vdc_simulation.py        # stochastic VDC test (reference copy)
+└── _z80_lib_cburbridge/          # pure-Python Z80 core
+```
+
+Если работаешь только с TS-Conf — клонируй репо и всё нужное под рукой.
+
 ---
 
 ## 4. Сборка проекта (нужна, чтобы harness'ы могли работать)
