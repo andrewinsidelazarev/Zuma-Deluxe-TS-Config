@@ -16,9 +16,12 @@ import random
 from dataclasses import dataclass, field
 
 # ---------- Константы (соответствуют asm) ----------
-CELL_SIZE          = 32          # шаг между slot-позициями в семплах трека (физ. px = TrackLen/TRACK_NUM_SLOTS ≈ 20.7)
+CELL_SIZE          = 20          # шаг между slot-позициями (= asm CELL_SIZE 2026-05-15 для нового resample-1px трека)
 NUM_BALL_COLORS    = 6           # = LevelNumColors в asm (red/green/yellow/blue/purple/white)
 MAX_SLOTS          = 240
+LEVEL_START_BALLS  = 35          # быстрая фаза: 35 шаров вылезают «поездом» (= asm)
+LEVEL_TOTAL_BALLS  = 85          # после этого спавн прекращается
+FAST_ADVANCE       = 12          # MoveChain'ов за кадр в fast-фазе
 GAP_STEP_FRAMES    = CELL_SIZE
 EXPLOSION_FRAMES   = 14          # длительность destroy-анимации до финализации (Slots[i]=GAP)
 NUM_DESTROY_FRAMES = 7           # 7 кадров (frame_idx = (ExplodingFrame-1)/2)
@@ -29,30 +32,8 @@ SHOT_SPEED         = 6           # px/frame
 DM3_OFFSET_GAP_MAX = 8
 ROLLBACK_PUSH      = 4           # × match_count = total push px
 BALL_DIAMETER      = 20          # px — = asm BALL_DIAMETER (DMA-burst 10 words). Лимит = 2*min(TrackX)=20.
-BALL_RADIUS_VISUAL = 10          # px — visible радиус. asm balls24_gfx.bin маска radius=10 → diameter 20 px.
+BALL_RADIUS_VISUAL = 9           # px — visible радиус в png-маске (asm: radius 9.5 → diam ~18)
 COLLISION_BBOX_HALF = 14         # px — bbox-проверка как в asm CheckBallChainCollisions: |dx|<14 && |dy|<14
-
-# Level pacing (= asm LEVEL_START_BALLS / FAST_ADVANCE). Phase 1 «влёт» —
-# chain advance ×FAST_ADVANCE_SPAWN за тик пока не выехало LEVEL_START_BALLS шаров;
-# потом нормальный темп. asm-эквивалент: UpdateGame.ug_fast (12 MoveChain + spawn).
-# Здесь 4 (а не 12 как в asm) — чтобы цепь не успевала пролететь весь трек до конца
-# спавна и не врезалась в killzone сразу. К концу влёта голова в начале visible зоны.
-# FAST_ADVANCE_ABSORB = темп поглощения в Game-Over, где скорость не критична.
-# Per-level параметры (в asm пока константы LEVEL_START_BALLS / LEVEL_REPEAT_BALLS,
-# в будущем — поля level data). LEVEL_START_BALLS = «сколько шаров вылетают поездом».
-# После: LEVEL_REPEAT_BALLS шаров обычной скоростью; потом спавн прекращается.
-LEVEL_START_BALLS    = 35
-LEVEL_REPEAT_BALLS   = 50
-LEVEL_TOTAL_BALLS    = LEVEL_START_BALLS + LEVEL_REPEAT_BALLS  # 85
-FAST_ADVANCE_SPAWN   = 12      # = asm UpdateGame.ug_fast (line 161): кол-во MoveChain'ов за кадр
-FAST_ADVANCE_ABSORB  = 12
-FAST_ADVANCE         = FAST_ADVANCE_ABSORB    # back-compat alias
-
-# Game Over: triggered когда head ball Manhattan(KzCenter) < KZ_TRIGGER_DIST.
-# Absorption phase — chain advance ×FAST_ADVANCE, при HSA=cap+hsub wrap = head consumed.
-# После slots_len==0 → text-state, через GAME_OVER_HOLD кадров → auto-restart.
-KZ_TRIGGER_DIST    = 16
-GAME_OVER_HOLD     = 200          # frames text holds before auto-restart
 
 # Frog & screen
 SCR_W, SCR_H = 360, 288
@@ -112,13 +93,6 @@ class VDCState:
     balls_spawned: int = 0
     last_match_scan_idx: int = 0
     frame: int = 0
-    # Game state machine (parallel asm GameState):
-    #   0 = playing
-    #   1 = absorbing head into killzone (fast-advance, head consumed when HSA cap)
-    #   2 = "GAME OVER" text shown, frozen state до auto-restart
-    game_state: int = 0
-    absorb_counter: int = 0             # сколько шаров уже поглощено в state 1 (для info panel)
-    game_over_tick: int = 0             # счётчик кадров в state 2 → triggers restart
 
 class VDCEngine:
     def __init__(self, track, seed=0):
@@ -317,19 +291,25 @@ class VDCEngine:
 
     # --------- Spawn / Insert ----------
     def try_spawn(self):
-        """1:1 с asm SpawnChainBall (.scb_loop): спавн каждый раз когда HSA >= SlotsLen,
-        без gate'а по hsub. Offset нового шара = 0 (как в asm), цепь сама выстраивается
-        в cell-aligned формацию по мере advance'а. С FAST_ADVANCE_SPAWN=12 это даёт
-        burst — 35 шаров за ~90 тиков ≈ 1.9 сек."""
         s = self.s
         if s.slots_len >= MAX_SLOTS: return False
         if s.hsa < s.slots_len: return False
+        # Спавнить только когда chain выровнен по cell-границе (hsub=0).
+        if s.hsub != 0: return False
         candidate = self.rng.randint(0, NUM_BALL_COLORS - 1)
         # anti-3-spawn-guard
         if s.slots_len >= 2 and s.slots[s.slots_len - 1] == s.slots[s.slots_len - 2] == candidate:
             candidate = (candidate + 1) % NUM_BALL_COLORS
         s.slots[s.slots_len] = candidate
-        s.offsets[s.slots_len] = 0
+        # Offset нового шара = offset хвоста (или -delta*CELL_SIZE если цепь пуста).
+        # Это даёт ровную cell-aligned дистанцию между новым шаром и хвостом
+        # синхронно в их фазе decay'я. Никаких «дырок» между ними.
+        if s.slots_len > 0:
+            new_offset = s.offsets[s.slots_len - 1]
+        else:
+            delta = s.hsa - s.slots_len
+            new_offset = sat_signed(-delta * CELL_SIZE) if delta > 0 else 0
+        s.offsets[s.slots_len] = sat_signed(new_offset)
         s.shot2[s.slots_len] = 0
         s.last_render_pos[s.slots_len] = None
         s.slots_len += 1
@@ -385,79 +365,6 @@ class VDCEngine:
         # NO freeze: head decay (-CS→0) + natural hsub++ → head advance 2 cells за
         # CELL_SIZE кадров, освобождая место для нового шара. Хвост не останавливается.
         return self.check_match3(target_idx)
-
-    # --------- Game Over absorption ----------
-    def max_hsa(self):
-        return len(self.track) // CELL_SIZE - 1
-
-    def head_idx(self):
-        """Index первого non-gap, non-exploding слота — это «голова» цепи."""
-        s = self.s
-        for i in range(s.slots_len):
-            if is_gap(s.slots[i]): continue
-            if s.exploding_frame[i] > 0: continue
-            return i
-        return -1
-
-    def head_at_killzone(self):
-        """True когда head ball в KZ_TRIGGER_DIST от kill-zone center
-        (= последняя точка трека). Эквивалент asm Manhattan(HeadX,KzX)+Manhattan(HeadY,KzY)<16."""
-        i = self.head_idx()
-        if i < 0: return False
-        pos = self.slot_pos(i)
-        if pos is None: return False
-        kx, ky = self.track[-1]
-        return abs(pos[0] - kx) + abs(pos[1] - ky) < KZ_TRIGGER_DIST
-
-    def absorb_head(self):
-        """Head consumed by killzone: shift_left arrays + slots_len--.
-        Caller (move_chain_absorb) уже сделал hsub wrap (32→0) при HSA=cap.
-        HSA НЕ декрементируем: shift сам компенсирует — old idx 1 становится
-        new idx 0, его slot_t = (HSA-0)*32+hsub+offsets[1] = 95*32+0+offsets[1],
-        что равно old slot_t(1) at pre-wrap moment ((95-1)*32+32+offsets[1]).
-        Если HSA-=1 → new slot_t(0) = 94*32+offsets[1] = -32 backward jump (бага)."""
-        s = self.s
-        if s.slots_len == 0: return
-        for j in range(s.slots_len - 1):
-            s.slots[j] = s.slots[j+1]
-            s.offsets[j] = s.offsets[j+1]
-            s.shot2[j] = s.shot2[j+1]
-            s.last_render_pos[j] = s.last_render_pos[j+1]
-            s.rollback_counter[j] = s.rollback_counter[j+1]
-            s.exploding_frame[j] = s.exploding_frame[j+1]
-            s.exploding_marker[j] = s.exploding_marker[j+1]
-        # Последний slot обнуляем — он теперь «за хвостом», должен быть пустым
-        last = s.slots_len - 1
-        s.slots[last] = GAP_STOP
-        s.offsets[last] = 0
-        s.shot2[last] = 0
-        s.last_render_pos[last] = None
-        s.rollback_counter[last] = 0
-        s.exploding_frame[last] = 0
-        s.exploding_marker[last] = GAP_STOP
-        s.slots_len -= 1
-        s.absorb_counter += 1
-
-    def move_chain_absorb(self):
-        """Move-chain в game-over absorbing state: каждый wrap hsub при HSA=cap →
-        consume head (вместо clamp'а HSA как в обычном MoveChain). Эффект — chain
-        продолжает двигаться вперёд с постоянной скоростью, шары поедаются один
-        за другим."""
-        s = self.s
-        if s.chain_stalled: return
-        if s.chain_freeze_counter > 0:
-            s.chain_freeze_counter -= 1
-            return
-        s.hsub += 1
-        if s.hsub >= CELL_SIZE:
-            s.hsub = 0
-            if s.hsa < self.max_hsa():
-                s.hsa += 1
-            else:
-                # HSA at cap — head ball «вылетает» в kill-zone.
-                # absorb_head() делает HSA-=1, но шары по абс. позиции стоят на месте.
-                # Net: chain advance 1 cell, head лишился, остальные подтянулись на CELL_SIZE.
-                self.absorb_head()
 
     # --------- Compute slot's track-position ----------
     def slot_t(self, i):
@@ -516,13 +423,11 @@ class App:
         self.mouse_xy = (FROG_CX, FROG_CY - 50)
         self.spawn_timer = 0
         self.shot_cooldown = 0
+        self.game_state = 0       # 0=playing, 1=absorbing, 2=game over text
+        self.kz_xy = (kx, ky)     # killzone center (= track[-1])
+        self.absorb_threshold = 16
         self.canvas.bind('<Motion>', self.on_motion)
         self.canvas.bind('<Button-1>', self.on_click)
-        # 'g' = форсированный Game Over для тестирования (не ждать наполнения цепи).
-        # 'r' = restart в любой момент (= после game over auto-restart то же самое).
-        self.root.bind('<KeyPress-g>', self.on_force_gameover)
-        self.root.bind('<KeyPress-r>', self.on_restart_key)
-        self.root.focus_set()
         self.root.protocol('WM_DELETE_WINDOW', self.on_closing)
         # Pre-draw faint track outline
         self._track_drawn = False
@@ -562,13 +467,7 @@ class App:
         # Лог КАЖДОГО клика (включая cooldown'ы) — для отладки «само стреляет».
         gx, gy = e.x / SCALE, e.y / SCALE - RENDER_Y_OFFSET
         self.log.write(f'# CLICK frame={self.engine.s.frame} canvas=({e.x},{e.y}) game=({gx:.1f},{gy:.1f}) cooldown={self.shot_cooldown} color={self.next_color}\n')
-        # В states 1/2 input заблокирован — клик игнорируется (asm: HandleInput RET NZ).
-        # State 2 click → restart игры (быстрее чем ждать GAME_OVER_HOLD).
-        if self.engine.s.game_state == 2:
-            self.restart_game()
-            return
-        if self.engine.s.game_state == 1:
-            return
+        if self.game_state != 0: return                 # absorption / text → input заблокирован
         if self.shot_cooldown > 0: return
         # Direction from frog center to click
         dx = gx - FROG_CX
@@ -581,26 +480,6 @@ class App:
         self.flying.append(FlyingBall(FROG_CX, FROG_CY, dx, dy, self.next_color))
         self.next_color = self.rng_color()
         self.shot_cooldown = 8
-
-    def on_force_gameover(self, _evt):
-        s = self.engine.s
-        if s.game_state != 0: return
-        self.log.write(f'# GAMEOVER forced (key) frame={s.frame} slots_len={s.slots_len}\n')
-        s.game_state = 1
-        s.absorb_counter = 0
-        self.flying = []
-
-    def on_restart_key(self, _evt):
-        self.restart_game()
-
-    def restart_game(self):
-        self.log.write(f'# RESTART frame={self.engine.s.frame}\n')
-        self.engine = VDCEngine(self.track, seed=random.randint(0, 1<<30))
-        self.flying = []
-        self.next_color = self.rng_color()
-        self.shot_cooldown = 0
-        self._track_drawn = False  # перерисовать line+killzone tags поверх свежей сцены
-        self.canvas.delete('track')
 
     def update_flying(self):
         e = self.engine
@@ -652,59 +531,73 @@ class App:
                 new_list.append(b)
         self.flying = new_list
 
+    def head_dist_to_kz(self):
+        """Manhattan distance head ball → KzCenter. None если chain пустой."""
+        e = self.engine
+        if e.s.slots_len == 0: return None
+        head = e.slot_pos(0)
+        if head is None: return None
+        kx, ky = self.kz_xy
+        return abs(head[0] - kx) + abs(head[1] - ky)
+
+    def absorb_head_ball(self):
+        """Shift slot[i] = slot[i+1], inc HSA, dec SlotsLen. Игнорирует cap по HSA."""
+        s = self.engine.s
+        if s.slots_len == 0: return
+        for i in range(s.slots_len - 1):
+            s.slots[i] = s.slots[i+1]
+            s.offsets[i] = s.offsets[i+1]
+            s.shot2[i] = s.shot2[i+1]
+            s.last_render_pos[i] = s.last_render_pos[i+1]
+            s.rollback_counter[i] = s.rollback_counter[i+1]
+            s.exploding_frame[i] = s.exploding_frame[i+1]
+            s.exploding_marker[i] = s.exploding_marker[i+1]
+        s.slots_len -= 1
+        s.hsa += 1                                  # force past cap
+        self.log.write(f'# ABSORB frame={s.frame} slotsLen={s.slots_len} hsa={s.hsa}\n')
+
     def tick(self):
         e = self.engine
-        s = e.s
-        if s.game_state == 0:
-            # 1:1 с asm UpdateGame:
-            #  Phase 1 (BallsSpawned < LEVEL_START_BALLS): ug_fast →
-            #    FAST_ADVANCE_SPAWN × MoveChain + 1 AnimateChain + TrySpawn каждый тик.
-            #  Phase 2 (LEVEL_START_BALLS .. LEVEL_TOTAL_BALLS): normal /2 subdivider,
-            #    спавн только раз в 64 кадра (`AND 63`).
-            #  Phase 3 (BallsSpawned >= LEVEL_TOTAL_BALLS): без спавна, /2 subdivider.
-            if s.balls_spawned < LEVEL_START_BALLS:
-                for _ in range(FAST_ADVANCE_SPAWN):
-                    e.move_chain()
-                e.animate_chain()
-                e.try_spawn()
-            else:
-                if (s.frame & 1) == 0:
-                    e.move_chain()
-                    e.animate_chain()
-                if s.balls_spawned < LEVEL_TOTAL_BALLS and (s.frame & 63) == 0:
+        if self.game_state == 0:
+            # Spawn phases (как в asm UpdateGame):
+            #  - fast phase: BallsSpawned < LEVEL_START_BALLS → FAST_ADVANCE MoveChain'ов за кадр.
+            #  - normal: спавн каждые 64 кадра, 1 MoveChain раз в 2 кадра.
+            if e.s.balls_spawned < LEVEL_START_BALLS:
+                for _ in range(FAST_ADVANCE):
                     e.try_spawn()
-            self.update_flying()
-            # ---- Game-Over trigger: head ball Manhattan(killzone) < 16 ----
-            # Только после окончания фазы влёта: при FAST_ADVANCE_SPAWN=12 цепь
-            # успевает дойти до cap'а HSA до окончания спавна 35 шаров — без этого
-            # gate'а абсорпция начнётся посреди влёта и поглотит ещё-не-вылезшие шары.
-            if s.balls_spawned >= LEVEL_START_BALLS and e.head_at_killzone():
-                self.log.write(f'# GAMEOVER trigger frame={s.frame} hsa={s.hsa} slots_len={s.slots_len}\n')
-                s.game_state = 1
-                s.absorb_counter = 0
-                # Чистим flying balls — выстрелы во время absorption не хотим (шар может
-                # вставиться в исчезающую цепь = непонятный визуал).
-                self.flying = []
-        elif s.game_state == 1:
-            # ---- Absorption: chain advance ×FAST_ADVANCE_ABSORB, head consumed at HSA cap ----
-            absorbed_pre = s.absorb_counter
-            for _ in range(FAST_ADVANCE_ABSORB):
-                e.move_chain_absorb()
-            if s.absorb_counter > absorbed_pre:
-                self.log.write(f'# ABSORB frame={s.frame} count={s.absorb_counter} slots_len={s.slots_len} hsub={s.hsub}\n')
+                    e.move_chain()
+            else:
+                if e.s.balls_spawned < LEVEL_TOTAL_BALLS:
+                    if (e.s.frame & 63) == 0:
+                        e.try_spawn()
+                if (e.s.frame & 1) == 0:
+                    e.move_chain()
             e.animate_chain()
-            if s.slots_len == 0:
-                self.log.write(f'# GAMEOVER text-state frame={s.frame} absorbed={s.absorb_counter}\n')
-                s.game_state = 2
-                s.game_over_tick = 0
+            self.update_flying()
+            if self.shot_cooldown > 0:
+                self.shot_cooldown -= 1
+            e.s.frame += 1
+            # Trigger Game Over: head ball Manhattan(kz) < threshold
+            d = self.head_dist_to_kz()
+            if d is not None and d < self.absorb_threshold:
+                self.game_state = 1
+                self.log.write(f'# GAME OVER TRIGGER frame={e.s.frame} dist={d}\n')
+        elif self.game_state == 1:
+            # Absorbing — chain advance fast (12 MoveChain per frame)
+            for _ in range(FAST_ADVANCE):
+                e.move_chain()
+            e.animate_chain()
+            e.s.frame += 1
+            # If head ≤ threshold от kz → absorb
+            d = self.head_dist_to_kz()
+            if d is not None and d < self.absorb_threshold:
+                self.absorb_head_ball()
+            if e.s.slots_len == 0:
+                self.game_state = 2
+                self.log.write(f'# GAME OVER STATE 2 frame={e.s.frame}\n')
         else:
-            # ---- state 2: «GAME OVER» text + auto-restart через GAME_OVER_HOLD ----
-            s.game_over_tick += 1
-            if s.game_over_tick >= GAME_OVER_HOLD:
-                self.restart_game()
-        if self.shot_cooldown > 0:
-            self.shot_cooldown -= 1
-        s.frame += 1
+            # State 2: text shown, no engine tick
+            e.s.frame += 1
         self.render()
         # Log state for offline analysis
         s = e.s
@@ -736,14 +629,26 @@ class App:
             c.create_oval(cx-12, cy-12, cx+12, cy+12, fill='#000000', outline='#ffaa00', width=2, tags='track')
             self._track_drawn = True
 
-        # Chain balls
+        # Chain balls (with gradient pull near KzCenter)
         e = self.engine
+        kx, ky = self.kz_xy
         for i in range(e.s.slots_len):
             slot = e.s.slots[i]
             if is_gap(slot): continue
             pos = e.slot_pos(i)
             if pos is None: continue                      # pre-spawn (t<0) → не рисуем
             x, y = pos
+            # Gradient pull: чем ближе ball к kz, тем сильнее тянем render-позицию.
+            d = abs(x - kx) + abs(y - ky)
+            if d < 16:
+                if d < 4:
+                    x, y = kx, ky                          # snap
+                elif d < 8:
+                    x = (x + 3*kx) // 4                    # 3/4 to kz
+                    y = (y + 3*ky) // 4
+                else:
+                    x = (x + kx) // 2                      # midpoint
+                    y = (y + ky) // 2
             color = BALL_COLORS.get(slot, '#888')
             cx, cy = self.s2c(x, y)
             ef = e.s.exploding_frame[i]
@@ -786,45 +691,25 @@ class App:
         c.create_oval(fx-6*SCALE, fy-6*SCALE, fx+6*SCALE, fy+6*SCALE,
                       fill=prev_color, outline='#fff', tags='dyn')
 
-        # GAME OVER text overlay (state 2). State 1 = в процессе поглощения, текста ещё нет.
-        s = e.s
-        if s.game_state == 2:
-            cx_mid = self.cw // 2
-            cy_mid = self.ch // 2
-            # Тёмный полупрозрачный baseline (rect, ground для контраста)
-            c.create_rectangle(0, cy_mid - 40 * SCALE, self.cw, cy_mid + 40 * SCALE,
-                               fill='#000000', outline='', stipple='gray50', tags='dyn')
-            c.create_text(cx_mid, cy_mid - 12 * SCALE, text='GAME OVER',
-                          font=('Impact', 24 * SCALE, 'bold'), fill='#ff4040', tags='dyn')
-            hold_left = max(0, GAME_OVER_HOLD - s.game_over_tick) // 50
-            c.create_text(cx_mid, cy_mid + 18 * SCALE,
-                          text=f'click or wait {hold_left}s to restart',
-                          font=('Consolas', 9 * SCALE), fill='#cccccc', tags='dyn')
+        # Game Over text overlay
+        if self.game_state == 2:
+            tx, ty = self.cw // 2, self.ch // 2
+            c.create_rectangle(tx-130, ty-30, tx+130, ty+30, fill='#000000', outline='#ffaa00', width=2, tags='dyn')
+            c.create_text(tx, ty, text='GAME OVER', font=('Impact', 32), fill='#ffaa00', tags='dyn')
 
         # Info panel
+        s = e.s
         info = []
-        gs_label = {0: 'PLAYING', 1: 'ABSORBING', 2: 'GAMEOVER'}[s.game_state]
-        info.append(f'GameState:    {s.game_state} {gs_label}')
-        if s.game_state == 1:
-            info.append(f'Absorbed:     {s.absorb_counter}')
         info.append(f'Frame:        {s.frame}')
+        info.append(f'GameState:    {self.game_state}')
         info.append(f'SlotsLen:     {s.slots_len}/{MAX_SLOTS}')
-        info.append(f'HSA:          {s.hsa}/{e.max_hsa()}')
+        info.append(f'HSA:          {s.hsa}')
         info.append(f'HSub:         {s.hsub}/{CELL_SIZE}')
         info.append(f'Stalled:      {s.chain_stalled}')
         info.append(f'GapStepCnt:   {s.gap_step_counter}/{GAP_STEP_FRAMES}')
-        info.append(f'BallsSpawned: {s.balls_spawned}/{LEVEL_TOTAL_BALLS}')
-        if s.balls_spawned < LEVEL_START_BALLS:
-            spawn_status = f'fast x{FAST_ADVANCE_SPAWN}'
-        elif s.balls_spawned < LEVEL_TOTAL_BALLS:
-            spawn_status = 'normal (1/64f)'
-        else:
-            spawn_status = 'done'
-        info.append(f'Spawn:        {spawn_status}')
+        info.append(f'BallsSpawned: {s.balls_spawned}')
         info.append(f'Flying balls: {len(self.flying)}')
         info.append(f'Next color:   {self.next_color}')
-        info.append('')
-        info.append('Keys: G=force-gameover, R=restart')
         info.append('')
         info.append('--- Slot states ---')
         info.append('idx slot off shot2')
