@@ -1154,6 +1154,141 @@ T1YOFSH EQU \#47AF
 
 ### 
 
+# Отладка через circular RAM log
+
+Когда баг редкий (раз в N минут) и не воспроизводится в Python-симуляторе или Z80-харнессе, классический trial-and-error с гипотезами по 30 минут на круг — тупик. Альтернативный подход: **circular log в ОЗУ + F12-дамп**.
+
+## Идея
+
+В asm-коде заводим ring buffer (256 entries × 8 байт = 2 KB), в ключевых точках логики добавляем `CALL LogEvent` со снимками state. Игрок играет до проявления бага, делает F12-dump через эмулятор, и парсер на хосте читает последние ~256 событий перед глюком. Никакого пошагового breakpoint'а — реконструируем по log'у.
+
+В 2026-05-16 такой лог поймал баг **«шар улетает сильно влево через gap»** на level 2 за одну сессию: HEMI зафиксировал target=(130, 29), APPR\_END показал прибытие в (60, 31) — drift 65 px, мгновенное доказательство moving-target physics. До этого баг 2 дня не давался trial-and-error'ом.
+
+## Структура записи (8 байт)
+
+| offset | поле | назначение |
+| :--- | :--- | :--- |
+| +0 | type (1 b) | event id (0 = пустой слот, 1..N = типы) |
+| +1 | ctx (1 b) | ball\_idx / slot\_idx / контекстный байт |
+| +2 | frame (1 b) | FrameCounter snapshot (time-correlation) |
+| +3 | \_ (1 b) | reserved (выравнивание под 8) |
+| +4..+5 | data1 (word LE) | event-specific |
+| +6..+7 | data2 (word LE) | event-specific |
+
+## Переменные
+
+```asm
+GameLogIdx:  DB 0                      ; 0..255, write idx mod 256
+LogTmpType:  DB 0
+LogTmpCtx:   DB 0
+LogTmpData:  DS 4                      ; d1lo, d1hi, d2lo, d2hi
+GameLog:     DS 256 * 8                ; 2 KB ring buffer
+```
+
+## LogEvent — записывающая процедура
+
+Сохраняет все регистры (4-байтный PUSH/POP). Caller заполняет `LogTmp*` перед `CALL LogEvent`.
+
+```asm
+LogEvent:
+    PUSH AF : PUSH BC : PUSH DE : PUSH HL
+    LD A, (GameLogIdx)
+    LD H, 0 : LD L, A
+    ADD HL, HL : ADD HL, HL : ADD HL, HL   ; HL = idx * 8
+    LD DE, GameLog
+    ADD HL, DE                             ; HL = &entry
+    LD A, (LogTmpType)   : LD (HL), A : INC HL
+    LD A, (LogTmpCtx)    : LD (HL), A : INC HL
+    LD A, (FrameCounter) : LD (HL), A : INC HL
+    XOR A : LD (HL), A : INC HL            ; reserved
+    EX DE, HL                              ; DE = &entry+4
+    LD HL, LogTmpData : LD BC, 4 : LDIR
+    LD A, (GameLogIdx) : INC A : LD (GameLogIdx), A
+    POP HL : POP DE : POP BC : POP AF
+    RET
+```
+
+## Пример хука — bullet bbox-hit
+
+7 инструкций на сайт лога:
+
+```asm
+LD A, EVT_BBOX_HIT   : LD (LogTmpType), A
+LD A, (TmpChainIdx)  : LD (LogTmpCtx), A
+LD HL, (TmpBallCX)   : LD (LogTmpData), HL
+LD HL, (TmpBallCY)   : LD (LogTmpData+2), HL
+CALL LogEvent
+```
+
+## Где хучить в Zuma-движке
+
+| Event | Точка | data1 | data2 |
+| :--- | :--- | :--- | :--- |
+| SHOT_FIRED | bullet spawn (после установки BALL\_X/Y) | BallX | BallY |
+| BBOX_HIT | bbox-pass в CheckBallChainCollisions, перед hemisphere | bullet\_CX | bullet\_CY |
+| HEMI | После hemisphere decision (target\_idx выбран) | target\_X | target\_Y (через ComputeSlotXY) |
+| INSERT | Entry InsertChainBall | color | (HSA<<8) \| SlotsLen |
+| APPR_END | Перед InsertChainBall в approach physics | BallX | BallY (top-left прибытия) |
+
+## Парсер дампа (Python)
+
+Адреса берутся из `--sym` после сборки (могут смещаться при правках кода).
+
+```python
+with open('111', 'rb') as f: dump = f.read()
+GAMELOG_IDX_ADDR = 0x8B84   # из zuma_new_spg.sym
+GAMELOG_ADDR     = 0x8B8B
+idx = dump[GAMELOG_IDX_ADDR]
+for i in range(256):
+    real_idx = (idx + i) % 256          # oldest → newest
+    base = GAMELOG_ADDR + real_idx * 8
+    type_, ctx, frame, _, d1l, d1h, d2l, d2h = dump[base:base+8]
+    if type_ == 0: continue
+    d1 = d1l | (d1h << 8); d2 = d2l | (d2h << 8)
+    print(f'type={type_} ctx={ctx} frame={frame} d1={d1} d2={d2}')
+```
+
+## Ключевое сравнение для moving-target баг
+
+Сравнить `HEMI.target_pos` и `APPR_END.ball_pos` (center = top-left + 12):
+
+- drift < 20 px — норма (approach physics корректно догоняет slot)
+- **drift > 30 px — moving-target glitch**: slot физически уехал во время полёта (offset decay / HSA change / match-3 cascade), шар догнал его в новой позиции
+
+## Auto-freeze (опционально)
+
+Чтобы важная цепочка событий не вытеснилась последующей игрой, добавить freeze-флаг:
+
+```asm
+GameLogFrozen: DB 0
+LogEvent:
+    LD A, (GameLogFrozen) : OR A : RET NZ   ; уже заморожен — не пишем
+    ...
+```
+
+И в коде детекции глюка (например, при `|HEMI.target_X - bullet_X| > 40`):
+
+```asm
+LD A, 1 : LD (GameLogFrozen), A
+```
+
+Buffer фиксируется на состоянии «момент глюка», следующие 100 кадров игры не вытесняют события.
+
+## Чего НЕ делать
+
+- Не вызывать `CALL LogEvent` из IRQ-обработчика — может перекрыть запись в середине entry и corrupt'нуть данные.
+- Не использовать LogEvent рекурсивно (нет защиты от reentrancy).
+- Не логировать каждый кадр FrameCounter — затопит buffer бесполезным шумом. Только реальные game events.
+- Не размещать buffer в slot 3 (stack page) или slot 0 (ROM mapped) — данные пропадут или будут затёрты.
+
+## Объём vs покрытие во времени
+
+- 128 entries × 8 = 1 KB → ~10-25 сек активной игры
+- **256 entries × 8 = 2 KB → ~25-50 сек** (рекомендуется default)
+- 512 entries × 8 = 4 KB → 1-2 мин
+
+При активной стрельбе ~5 events на выстрел (SHOT\_FIRED + BBOX\_HIT + HEMI + APPR\_END + INSERT) и 1-2 выстрела в секунду = 10 events/сек.
+
 # Приложение
 
 Описатель портов: 
