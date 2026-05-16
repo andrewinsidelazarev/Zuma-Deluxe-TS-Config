@@ -177,6 +177,7 @@ def main() -> int:
     actions: list[str] = []
     warnings: list[str] = []
     missing: list[str] = []
+    changed_paths: list[str] = []     # repo-relative paths, для git add
     for ws_rel, repo_rel in items:
         action = sync_one(ws_rel, repo_rel, args.apply)
         if action is None:
@@ -187,6 +188,7 @@ def main() -> int:
             missing.append(action)
         else:
             actions.append(action)
+            changed_paths.append(repo_rel)
 
     mode = "[apply]" if args.apply else "[dry-run]"
     print(f"{mode} {len(items)} mappings scanned")
@@ -211,8 +213,9 @@ def main() -> int:
         print("\nNothing to commit.")
         return 0
 
-    print("\n--- git add ---")
-    run_git(["add", "-A"])
+    print("\n--- git add (only synced paths) ---")
+    # Add по конкретным путям, чтобы не загребать untracked мусор.
+    run_git(["add", "--"] + changed_paths)
     status = run_git(["status", "--short"])
     print(status.stdout)
 
