@@ -20,8 +20,7 @@
 **Управление:**
 - Mouse: aim + LMB выстрел
 - Keyboard: O/P для поворота лягушки, SPACE для выстрела
-- Kempston JOY (для VDAC2-сборки)
-- Mouse low-pass фильтр (alpha=1/4) — гасит kempston jitter
+- Mouse low-pass фильтр (alpha=1/4) — гасит jitter мыши
 
 **Level Select экран:**
 - Scene 1: декоративная заставка с pyramid overlay + sky scroll dither
