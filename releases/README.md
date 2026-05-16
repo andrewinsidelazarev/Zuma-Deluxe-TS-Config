@@ -59,9 +59,9 @@
 
 ## Текущая версия
 
-**v16 (2026-05-16)** — `2026-05-16-v16-session_fixes/zuma.spg`
+**v16 (2026-05-16)** — `2026-05-16-v16-level2_playable/zuma.spg`
 
-### Fixes 2026-05-16 (v16 — Game Over fix L2 + RAM log + moving-target fix + dispname/palette unify) — самые новые
+### Fixes 2026-05-16 (v16 — Level 2 (Mud Slide) playable + Game Over L2 + moving-target fix + RAM log diagnostic) — самые новые
 - **Game Over на level 2** — `LVL02_TRACK_SLOTS`/`TRACK_NUM_SLOTS` теперь ceil-деление (`(points+CELL-1)/CELL`). На L2 floor давал 82 slots, HSA cap=81, head max t=1639, KzCenter в t=1655 → Manhattan ≥16 → `CheckHeadAtKillzone (CP 16: JR NC, skip)` никогда не triggered → Game Over не запускался.
 - **head-comp invariance** в `InsertChainBall` — `offsets[0..idx-1] -= CELL_SIZE` для всех знаков (с floor'ом -2×CELL_SIZE). Раньше negative offsets обрезались к `-CELL_SIZE`, теряя дельту → head-side слоты «прыгали» по треку на |offset_old| px вперёд при insert. На L2 fold-зоне это давало 23 px смещение = ширина межрядового зазора.
 - **TSU_BALL_HALF=12 EQU** — bullet center = top-left + 12 (24×24 sprite). Legacy +8 (16×16) давал логический центр на 4 px влево/вверх от визуального → hemisphere check (`prev/next Manhattan`) ошибался при snipe через gap.
@@ -146,7 +146,7 @@
 
 ## Запуск
 
-1. Скачать последний `2026-05-16-v16-session_fixes/zuma.spg` (или соответствующий .spg другой версии).
+1. Скачать последний `2026-05-16-v16-level2_playable/zuma.spg` (или соответствующий .spg другой версии).
 2. `Unreal.exe zuma.spg`.
 3. Управление: мышь (LMB — выстрел), либо O/P + SPACE.
 
