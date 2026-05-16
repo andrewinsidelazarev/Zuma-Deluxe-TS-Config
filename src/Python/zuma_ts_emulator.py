@@ -47,11 +47,30 @@ def parse_num(text: str) -> int:
 def parse_sym(path: Path) -> Dict[str, int]:
     syms: Dict[str, int] = {}
     rx = re.compile(r"^\s*([\w.]+):\s+EQU\s+([#$0-9A-Fa-fx]+)\s*$")
+    if not path.exists():
+        return syms
     with path.open("r", encoding="utf-8", errors="replace") as f:
         for line in f:
             m = rx.match(line)
             if m:
                 syms[m.group(1)] = parse_num(m.group(2))
+    return syms
+
+
+def parse_listing_sym(path: Path) -> Dict[str, int]:
+    """Parse sjasmplus LABELSLIST lines: slot:offset name."""
+    syms: Dict[str, int] = {}
+    rx = re.compile(r"^\s*([0-3][0-9A-Fa-f]?):([0-9A-Fa-f]{4})\s+([\w.]+)\s*$")
+    if not path.exists():
+        return syms
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = rx.match(line)
+            if not m:
+                continue
+            slot = int(m.group(1), 16)
+            off = int(m.group(2), 16)
+            syms[m.group(3)] = slot * PAGE_SIZE + off
     return syms
 
 
@@ -112,6 +131,7 @@ class ZumaTSEmulator:
     def __init__(self, root: Path = HERE, trace: bool = False) -> None:
         self.root = Path(root)
         self.sym = parse_sym(self.root / "zuma.sym")
+        self.sym.update(parse_listing_sym(self.root / "user.l"))
         self.mem = TSConfigMemory()
         self.input = InputState()
         self.trace = trace

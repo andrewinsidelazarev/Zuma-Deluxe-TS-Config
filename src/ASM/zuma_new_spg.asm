@@ -60,12 +60,16 @@ DMA_BLT_NOTRANSP_MODE EQU #B1    ; BLT0 + SALG + DALG (БЕЗ прозрачно
 BALL_PIX           EQU 20       ; DMA-burst width в px (DMA_SPRITE_HALF=10, чтобы trackX=10 не уходил в TmpChainX<0 → preserve gap)
 DMA_SPRITE_HALF    EQU BALL_PIX / 2          ; 9 — top-left offset = X - DMA_SPRITE_HALF
 DMA_BURST_WORDS    EQU BALL_PIX / 2          ; 9 words в burst (DMA копирует BALL_PIX px по X)
+; TSU-sprite 24×24 (SPSIZ24): bullet/preview/chain TSU. Top-left = center - 12.
+; Историч. legacy: было 8 (16×16); сейчас все 24×24 paths используют эту EQU.
+TSU_BALL_HALF      EQU 12
 CANVAS_W           EQU 360
 CANVAS_H           EQU 288
 ; Ограничение по X: dst_X = X & #FE, DMA пишет dst_X..dst_X+BALL_PIX-1.
-; Условие видимости: dst_X+BALL_PIX <= CANVAS_W → X & #FE <= CANVAS_W-BALL_PIX.
-; X = CANVAS_W-BALL_PIX+1 даёт dst_X = CANVAS_W-BALL_PIX — допустимо.
-DMA_X_MAX          EQU CANVAS_W - BALL_PIX + 2    ; 344 — X >= этого значит шар выходит за правый край
+; Canvas stride = 512 bytes. Безопасный максимум dst_X = 512 - BALL_PIX = 492 (нет wrap
+; в next line). Виртуальные bytes 360..511 не видны юзеру, но и не corrupt'ят rendering.
+; Шарики на границе (X=355..380) теперь partial-visible вместо PRESERVE.
+DMA_X_MAX          EQU 512 - BALL_PIX + DMA_SPRITE_HALF        ; 502 — X<502 (dst_X<492, нет stride wrap)
 
 BALLS_DMA_EVEN_PAGE EQU #40    ; #40..#45 — even спрайты 6 цветов (col 0..17 = шар)
 BALLS_DMA_ODD_PAGE  EQU #48    ; #48..#4D — odd спрайты (col 1..17 = шар сдвинут +1, col 18+ обрезается DMA-burst'ом)
@@ -83,7 +87,7 @@ KEY_SPACE EQU #7FFE   ; Бит 0 - пробел (выстрел)
 ; ================================================================
 MOUSE_X   EQU #FBDF   ; X счётчик (8-bit, относительный)
 MOUSE_Y   EQU #FFDF   ; Y счётчик (8-bit, относительный)
-MOUSE_BTN EQU #FADF   ; Кнопки: бит 0 = правая, бит 1 = левая (1=нажата)
+MOUSE_BTN EQU #FADF   ; buttons are active-low; normalize with CPL before testing bits
 
 ; ================================================================
 ; КОНСТАНТЫ
@@ -98,6 +102,23 @@ RTPAL_BALLS      EQU #C400
 RTPAL_BG_LEVEL1  EQU #C600
 RTPAL_GAMEOVER   EQU #C800
 RTPAL_BALLS_DMA  EQU #CA00
+RTPAL_BG_LEVEL2  EQU #CC00     ; level 2 palette на той же page #61 offset #4C00
+
+; ----- Per-level paging (Phase 3) -----
+; CurStageIdx = 0 → track page #03, ZX7 base #80, bg palette RTPAL_BG_LEVEL1
+; CurStageIdx = 1 → track page #04, ZX7 base #89, bg palette RTPAL_BG_LEVEL2
+; Все hardcoded `LD A, #03 : LD BC, PAGE3` для TrackData restore заменены на
+; `LD A, (CurTrackPage) : LD BC, PAGE3`. CurTrackPage обновляется в SetupCurLevelPaging.
+LVL01_TRACK_PAGE   EQU #03
+LVL02_TRACK_PAGE   EQU #04
+LVL01_ZX7_BASE     EQU #80
+LVL02_ZX7_BASE     EQU #89
+LVL02_TRACK_POINTS EQU 1656       ; claw track via import_real_level.py (no off-screen filter)
+; Округляем slots ВВЕРХ чтобы HSA cap (= slots-1) позволил голове реально достичь
+; killzone (TrackData[points-1]). При floor-делении head max t = (slots-1)*CELL+19
+; может оказаться > 16 px от points-1 → CheckHeadAtKillzone (Manhattan<16) не срабатывает,
+; Game Over не триггерится (как было на level 2 при slots=82 вместо 83).
+LVL02_TRACK_SLOTS  EQU (LVL02_TRACK_POINTS + CELL_SIZE - 1) / CELL_SIZE
 
 ; TSU SPSIZE / SPACT / SPLEAP
 SPSIZ8   EQU #00    ; размер 8
@@ -174,10 +195,21 @@ LEVEL_TOTAL_BALLS  EQU LEVEL_START_BALLS + LEVEL_REPEAT_BALLS  ; 85 — посл
 FAST_ADVANCE       EQU 12       ; кол-во MoveChain'ов за кадр в fast-фазе (norm = 1 за 2 кадра)
 ; --- Размер шара и cell-spacing (см. также make_dma_balls.py: BALL_PIX) ---
 BALL_DIAMETER      EQU 20       ; диаметр DMA-копии (= 10 words x 20 lines). Visible круг = 18-19 px (radius 9.5 в png-маске).
-CELL_SIZE          EQU 32       ; шаг между cell-позициями (в семплах трека).
+CELL_SIZE          EQU 20       ; шаг между cell-позициями (= BALL_DIAMETER = D, Codex invariant). Slot→track multiplication через MUL_CELL_SIZE macro (не hardcoded *32 как было).
                                 ; cell-step px = TrackLen / TRACK_NUM_SLOTS ~= 1986/96 ~= 20.7.
                                 ; Уменьшить до 18..24 если хотим плотнее.
 CHAIN_SPACING      EQU CELL_SIZE  ; legacy alias
+
+; Умножение HL на CELL_SIZE (20). Заменяет hardcoded `ADD HL, HL × 5` (×32).
+; HL = x: DE = x → HL = 2x → 4x → +x = 5x → 10x → 20x.
+    MACRO MUL_CELL_SIZE
+        LD D, H : LD E, L          ; DE = x
+        ADD HL, HL                 ; HL = 2x
+        ADD HL, HL                 ; HL = 4x
+        ADD HL, DE                 ; HL = 5x
+        ADD HL, HL                 ; HL = 10x
+        ADD HL, HL                 ; HL = 20x
+    ENDM
 
 ; ----- VDC (Virtual Discrete Chain) — текущая модель цепочки
 ;
@@ -251,7 +283,8 @@ KZ_OPEN_DIST          EQU 96    ; trackpoint distance до kz, при котор
 GAMEOVER_TNUM_BASE    EQU 3584   ; page #0D, cx=0..39 cy=0..7 после DMA-swap GAME OVER
 LVLINTRO_TNUM_BASE    EQU 3584   ; page #0D, cx=0..39 cy=0..7 после DMA-swap LEVEL INTRO
 GAMEOVER_ATLAS_SRC_PAGE EQU #50  ; source RAM page для GAME OVER atlas
-LVLINTRO_ATLAS_SRC_PAGE EQU #51  ; source RAM page для LEVEL INTRO atlas
+LVLINTRO_ATLAS_SRC_PAGE EQU #51  ; source RAM page для LEVEL 1-1 INTRO atlas
+LVL02INTRO_ATLAS_SRC_PAGE EQU #5D ; source RAM page для LEVEL 1-2 INTRO atlas
 TEXT_NUM_SPRITES      EQU 5
 TEXT_SPRITE_W         EQU 64
 TEXT_SPRITE_H         EQU 64
@@ -282,6 +315,13 @@ BALL_ANGLE  EQU 4
 BALL_SPEED  EQU 5
 BALL_ACTIVE EQU 6
 BALL_COLOR  EQU 7
+
+; Approach physics speed (px/frame в approach state). Раньше было 4 px/frame,
+; долёт занимал 16-20 кадров — за это время slot физически дрифтил из-за
+; offset decay / HSA change на 50+ px ("шар улетает влево через gap"). 8 px/frame
+; сокращает долёт до 5-10 кадров — slot не успевает уехать.
+APPROACH_SPEED      EQU 8
+APPROACH_SNAP_THR   EQU APPROACH_SPEED + 1   ; |dx| < THR → snap to target
 
 ; ================================================================
 ; ЦЕПОЧКА — VDC МОДЕЛЬ (Virtual Discrete Chain). См. полное описание выше.
@@ -315,6 +355,7 @@ BcsClipTop:   DB 0
 BcsClipBot:   DB 0
 BcsNumLines:  DB 0
 BcsXOdd:      DB 0
+BcsClipLeft:  DB 0      ; partial-render left edge (negative X) — DMA source X offset
 
 TmpKzX:        DW 0
 TmpKzY:        DW 0
@@ -325,6 +366,19 @@ TmpKzSrcPage:  DB 0
 
 VisiblePageBase: DB CANVAS_A_PAGE_BASE
 ShadowPageBase:  DB CANVAS_B_PAGE_BASE
+
+; ----- Per-level paging (Phase 3) -----
+; Обновляется SetupCurLevelPaging based on CurStageIdx. Дефолт = level 1 (#03/#80).
+CurTrackPage:    DB LVL01_TRACK_PAGE      ; PAGE3 для TrackData (#03 или #04)
+CurZx7Base:      DB LVL01_ZX7_BASE        ; первая ZX7-compressed canvas page (#80 или #89)
+CurBgPalSrc:     DW RTPAL_BG_LEVEL1       ; источник level palette в RUNTIME_PAL_PAGE
+CurTrackNumPoints: DW 0                    ; runtime track length for current level
+CurTrackNumSlots:  DB 0                    ; CurTrackNumPoints / CELL_SIZE
+DebugStage:      DB 0                     ; Phase 4 диагностика: stage tracking в GotoGame
+LevelLoadSavedRet: DW 0                    ; return address while PAGE3/stack page is recopied
+LevelLoadSavedSP:  DW 0
+LevelLoadTempStack: DEFS 256        ; was 128 — IM2 IRQ overflow при level 2 GotoGame (~9+ IRQs × 14 bytes)
+LevelLoadTempStackTop:
 
 ; --- Глобальная сцена (поверх GameState) ---
 ; 0 = GAME (нормальный игровой loop с GameState=0..3 внутри),
@@ -352,7 +406,7 @@ ChainPrevDstB:    DS MAX_CHAIN_BALLS * 4
 ChainPrevValidB:  DS MAX_CHAIN_BALLS
 
 BcsSkipFlag:      DS MAX_CHAIN_BALLS
-BcsCacheStruct:   DS MAX_CHAIN_BALLS * 6
+BcsCacheStruct:   DS MAX_CHAIN_BALLS * 7      ; [DstLow,DstMid,PageOver,NumLines,ClipTop,XOdd,ClipLeft]
 
 ; ================================================================
 ; КОД
@@ -363,10 +417,22 @@ Entry:
     DI
     LD BC, VCONFIG : LD A, %11000110 : OUT (C), A  ; NOGFX=1 until initial scene is ready
 
+    ; Phase 3: init CurTrackPage/CurZx7Base/CurBgPalSrc к level 1 СРАЗУ (DB/DW
+    ; в RAM page 5 не SAVEBIN'ятся → boot = 0). Все hardcoded `LD A, (CurTrackPage)`
+    ; для PAGE3 restore требуют валидное значение.
+    LD A, LVL01_TRACK_PAGE : LD (CurTrackPage), A
+    LD A, LVL01_ZX7_BASE   : LD (CurZx7Base), A
+    LD HL, RTPAL_BG_LEVEL1 : LD (CurBgPalSrc), HL
+    LD HL, TRACK_NUM_POINTS : LD (CurTrackNumPoints), HL
+    LD A, TRACK_NUM_SLOTS   : LD (CurTrackNumSlots), A
+    ; LevelSelect state (DB/DW в RAM page 5 не savebin'ятся).
+    XOR A : LD (CurStageIdx), A
+    LD A, 1 : LD (MaxUnlockedStage), A
+
     ; PAGE3 = #60 ПЕРВЫМ — track_overflow перенесён туда из #0C, чтобы освободить
     ; #0C под TSU sprite data (level preview). Stack at 0xFFFE → safe zone в page
     ; #60 bytes 0x800..0x3FFF, после track_overflow.bin = 0..0x7FF.
-    LD A, #60
+    LD A, #03
     LD BC, PAGE3
     OUT (C), A
 
@@ -398,7 +464,7 @@ Entry:
     CALL InitGame
 
     ; PoC Z3 unpacker — replace canvas A page 0 (#10) с unpacked compressed source #5D.
-    ; Z3 = bit-packed LZ77 (см. src/Python/compress_z3.py). Демонстрирует scene resource pipeline.
+    ; Z3 = bit-packed LZ77 (см. src/compress_z3.py). Демонстрирует scene resource pipeline.
     ; TODO: debug — отключено, baseline проверки.
     ; LD A, #5D : LD B, #10
     ; CALL UnpackZ3Page
@@ -409,6 +475,8 @@ Entry:
     ; Явно set Scene=1 — DB declaration в RAM page 5 не sохраняется через SAVEBIN.
     LD A, 1
     LD (Scene), A
+    XOR A
+    LD (MouseBtnFireFlag), A
     CALL LevelSelect_Init
     LD BC, VCONFIG : LD A, %11000010 : OUT (C), A  ; NOGFX=0, initial scene is synced
 
@@ -795,11 +863,12 @@ InitGame:
     ; от 0x969C, заполняет 0x969C..0xBFFF (page 2) + 0xC000..0xC6FE (page #60).
     ; PAGE3 должен быть = #60 чтобы read TrackData[t] для t > ~2520 не возвращал ROM-garbage.
     LD BC, PAGE2 : LD A, 2     : OUT (C), A
-    LD BC, PAGE3 : LD A, #60   : OUT (C), A
+    LD BC, PAGE3 : LD A, #03 : OUT (C), A
 
-    ; --- Killzone: позиция = конец трека (TrackData[TRACK_NUM_POINTS-1])
-    LD HL, TRACK_NUM_POINTS - 1
-    ADD HL, HL : ADD HL, HL                 ; HL = (TRACK_NUM_POINTS-1) * 4
+    ; --- Killzone: позиция = конец текущего трека (TrackData[CurTrackNumPoints-1])
+    LD HL, (CurTrackNumPoints)
+    DEC HL
+    ADD HL, HL : ADD HL, HL                 ; HL = (CurTrackNumPoints-1) * 4
     LD DE, TrackData
     ADD HL, DE
     LD A, (HL) : LD (KzCenterX), A : INC HL
@@ -981,6 +1050,21 @@ SpawnBall:
     LD (IX+BALL_Y), L
     LD A, H
     LD (IX+BALL_Y+1), A
+
+    ; --- DEBUG LOG: shot fired. ctx=ball_idx, data1=BallX, data2=BallY.
+    PUSH IX
+    POP HL
+    LD DE, BallTable
+    AND A
+    SBC HL, DE
+    SRL H : RR L
+    SRL H : RR L
+    SRL H : RR L                              ; HL = ball_index (0..MAX_BALLS-1)
+    LD A, L : LD (LogTmpCtx), A
+    LD A, EVT_SHOT_FIRED : LD (LogTmpType), A
+    LD L, (IX+BALL_X) : LD H, (IX+BALL_X+1) : LD (LogTmpData), HL
+    LD L, (IX+BALL_Y) : LD H, (IX+BALL_Y+1) : LD (LogTmpData+2), HL
+    CALL LogEvent
     RET
 
 ; ================================================================
@@ -1257,23 +1341,23 @@ UpdateBalls:
     XOR A : SUB L : LD L, A
     LD A, 0 : SBC A, H : LD H, A          ; HL = |dx|
     LD A, H : OR A : JR NZ, .ap_x_add4
-    LD A, L : CP 5 : JR NC, .ap_x_add4
-    ; |dx| <= 4 → ball.X = target.X
+    LD A, L : CP APPROACH_SNAP_THR : JR NC, .ap_x_add4
+    ; |dx| < APPROACH_SNAP_THR → ball.X = target.X
     LD HL, (TmpTargetX)
     JR .ap_x_store
 .ap_x_add4:
     LD L, (IX+BALL_X) : LD H, (IX+BALL_X+1)
-    LD DE, 4
+    LD DE, APPROACH_SPEED
     ADD HL, DE
     JR .ap_x_store
 .ap_x_ge:
     LD A, H : OR A : JR NZ, .ap_x_sub4
-    LD A, L : CP 5 : JR NC, .ap_x_sub4
+    LD A, L : CP APPROACH_SNAP_THR : JR NC, .ap_x_sub4
     LD HL, (TmpTargetX)
     JR .ap_x_store
 .ap_x_sub4:
     LD L, (IX+BALL_X) : LD H, (IX+BALL_X+1)
-    LD DE, 4
+    LD DE, APPROACH_SPEED
     AND A
     SBC HL, DE
 .ap_x_store:
@@ -1289,22 +1373,22 @@ UpdateBalls:
     XOR A : SUB L : LD L, A
     LD A, 0 : SBC A, H : LD H, A
     LD A, H : OR A : JR NZ, .ap_y_add4
-    LD A, L : CP 5 : JR NC, .ap_y_add4
+    LD A, L : CP APPROACH_SNAP_THR : JR NC, .ap_y_add4
     LD HL, (TmpTargetY)
     JR .ap_y_store
 .ap_y_add4:
     LD L, (IX+BALL_Y) : LD H, (IX+BALL_Y+1)
-    LD DE, 4
+    LD DE, APPROACH_SPEED
     ADD HL, DE
     JR .ap_y_store
 .ap_y_ge:
     LD A, H : OR A : JR NZ, .ap_y_sub4
-    LD A, L : CP 5 : JR NC, .ap_y_sub4
+    LD A, L : CP APPROACH_SNAP_THR : JR NC, .ap_y_sub4
     LD HL, (TmpTargetY)
     JR .ap_y_store
 .ap_y_sub4:
     LD L, (IX+BALL_Y) : LD H, (IX+BALL_Y+1)
-    LD DE, 4
+    LD DE, APPROACH_SPEED
     AND A
     SBC HL, DE
 .ap_y_store:
@@ -1320,6 +1404,16 @@ UpdateBalls:
     LD DE, (TmpTargetY)
     AND A : SBC HL, DE
     JR NZ, .ap_not_arrived
+
+    ; --- DEBUG LOG: approach arrived. ctx=ball_idx, data1=BallX, data2=BallY (top-left).
+    PUSH IX : POP HL
+    LD DE, BallTable : AND A : SBC HL, DE
+    SRL H : RR L : SRL H : RR L : SRL H : RR L  ; HL = ball_idx
+    LD A, L : LD (LogTmpCtx), A
+    LD A, EVT_APPROACH_END : LD (LogTmpType), A
+    LD L, (IX+BALL_X) : LD H, (IX+BALL_X+1) : LD (LogTmpData), HL
+    LD L, (IX+BALL_Y) : LD H, (IX+BALL_Y+1) : LD (LogTmpData+2), HL
+    CALL LogEvent
 
     LD A, (TmpChainIdx)
     LD (TmpInsertIdx), A
@@ -1543,6 +1637,45 @@ AbsDiff16:
     LD L, A
     INC HL
 .positive:
+    RET
+
+; ================================================================
+; LOG EVENT — circular debug log writer. Все регистры сохраняет.
+; Caller должен перед CALL заполнить LogTmpType, LogTmpCtx, LogTmpData (4 байта).
+; Запись 8 байт: [type, ctx, frame, 0, data1lo, data1hi, data2lo, data2hi].
+; GameLogIdx инкрементируется и оборачивается mod 128.
+; ================================================================
+LogEvent:
+    PUSH AF
+    PUSH BC
+    PUSH DE
+    PUSH HL
+    LD A, (GameLogIdx)
+    AND GAMELOG_IDX_MASK
+    LD H, 0 : LD L, A
+    ADD HL, HL : ADD HL, HL : ADD HL, HL    ; HL = idx * 8
+    LD DE, GameLog
+    ADD HL, DE                              ; HL = &entry
+    LD A, (LogTmpType)
+    LD (HL), A : INC HL                     ; +0 type
+    LD A, (LogTmpCtx)
+    LD (HL), A : INC HL                     ; +1 context
+    LD A, (FrameCounter)
+    LD (HL), A : INC HL                     ; +2 frame
+    XOR A
+    LD (HL), A : INC HL                     ; +3 reserved
+    EX DE, HL                               ; DE = &entry+4
+    LD HL, LogTmpData
+    LD BC, 4
+    LDIR                                    ; copy 4 bytes data1+data2
+    LD A, (GameLogIdx)
+    INC A
+    AND GAMELOG_IDX_MASK
+    LD (GameLogIdx), A
+    POP HL
+    POP DE
+    POP BC
+    POP AF
     RET
 
 ; ================================================================
@@ -2053,6 +2186,15 @@ InsertChainBall:
     ; 6. SlotOffsets[0..idx-1] -= CELL_SIZE с cap'ом -CELL_SIZE (head компенсация).
     ; 7. ChainFreezeCounter = CELL_SIZE.
 
+    ; --- DEBUG LOG: insert. ctx=TmpInsertIdx, data1=color, data2=(HSA<<8 | SlotsLen_before).
+    LD A, EVT_INSERT : LD (LogTmpType), A
+    LD A, (TmpInsertIdx) : LD (LogTmpCtx), A
+    LD A, (TmpInsertColor) : LD (LogTmpData), A
+    XOR A : LD (LogTmpData+1), A
+    LD A, (Chain0_SlotsLen) : LD (LogTmpData+2), A
+    LD A, (Chain0_HeadSlotAbs) : LD (LogTmpData+3), A
+    CALL LogEvent
+
     LD A, (Chain0_SlotsLen)
     CP MAX_SLOTS_PER_CHAIN
     JR C, .icb_not_full
@@ -2241,14 +2383,26 @@ InsertChainBall:
 
     ; HSA += 1 с cap по track-end (chain продвинулся на 1 cell к killzone)
     LD A, (Chain0_HeadSlotAbs)
-    CP TRACK_NUM_SLOTS - 1
-    JR NC, .icb_no_hsa_inc
+    LD B, A
+    LD A, (CurTrackNumSlots)
+    DEC A
+    CP B
+    JR Z, .icb_no_hsa_inc
+    JR C, .icb_no_hsa_inc
+    LD A, B
     INC A
     LD (Chain0_HeadSlotAbs), A
 .icb_no_hsa_inc:
 
-    ; Head компенсация: SlotOffsets[0..idx-1] = max(off - CELL_SIZE, -CELL_SIZE).
-    ; Equivalent: if A_orig >= 0 → A_orig - CELL_SIZE; else → -CELL_SIZE.
+    ; Head компенсация: SlotOffsets[0..idx-1] -= CELL_SIZE (signed) с floor'ом
+    ; -2*CELL_SIZE. Preserve position-invariance после HSA++: для любого
+    ; offset_old в [-CELL_SIZE+1, +127] новый offset = offset_old - CELL_SIZE,
+    ; и при HSA+1 физическая позиция slot не меняется.
+    ; Старый код «if offset<0 → cap to -CELL_SIZE» терял дельту для slots с
+    ; отрицательным pre-insert offset (после cascade rollback): такие slots
+    ; прыгали по треку на |offset_old| px вперёд — на fold-зоне level 2 это
+    ; визуально проявлялось как «шар вставился не в том месте» (head-side
+    ; ряд 1 наезжал на ряд 2).
     LD A, (TmpInsertIdx)
     OR A
     JR Z, .icb_no_head_comp
@@ -2256,12 +2410,12 @@ InsertChainBall:
     LD HL, Chain0_SlotOffsets
 .icb_head_comp_loop:
     LD A, (HL)
-    OR A
-    JP M, .icb_head_comp_cap               ; A_orig < 0 → cap to -CELL_SIZE
-    SUB CELL_SIZE                          ; A_orig >= 0 → subtract CELL_SIZE
-    JR .icb_head_comp_store
-.icb_head_comp_cap:
-    LD A, -CELL_SIZE                       ; cap at -32 = $E0
+    SUB CELL_SIZE                          ; всегда subtract (invariance)
+    BIT 7, A
+    JR Z, .icb_head_comp_store             ; положительный результат → store
+    CP -2 * CELL_SIZE                      ; unsigned CP против -40 = #D8
+    JR NC, .icb_head_comp_store            ; A в [-40, -1] → store
+    LD A, -2 * CELL_SIZE                   ; runaway floor: clamp к -2*CELL_SIZE
 .icb_head_comp_store:
     LD (HL), A
     INC HL
@@ -2607,8 +2761,7 @@ ComputeSlotXY:
     XOR A
 .csxy_hsa_ok:
     LD H, 0 : LD L, A
-    ADD HL, HL : ADD HL, HL : ADD HL, HL
-    ADD HL, HL : ADD HL, HL                ; HL = (HSA-i)*32
+    MUL_CELL_SIZE                          ; HL = (HSA-i)*CELL_SIZE
 
     LD A, (Chain0_HeadSub)
     LD E, A : LD D, 0
@@ -2632,12 +2785,13 @@ ComputeSlotXY:
     LD HL, 0
 .csxy_t_pos:
     PUSH HL
-    LD DE, TRACK_NUM_POINTS
+    LD DE, (CurTrackNumPoints)
     AND A
     SBC HL, DE
     POP HL
     JR C, .csxy_t_in
-    LD HL, TRACK_NUM_POINTS - 1
+    LD HL, (CurTrackNumPoints)
+    DEC HL
 .csxy_t_in:
     ADD HL, HL : ADD HL, HL                ; *4 (TrackData stride)
     LD DE, TrackData
@@ -2696,8 +2850,13 @@ CheckBallChainCollisions:
     OR A
     JP NZ, .cbc_next_outer
 
+    ; Центр летящего шара = top-left + TSU_BALL_HALF (24×24 TSU sprite).
+    ; Раньше было +8 (legacy 16×16) → логический центр смещался на 4 px
+    ; вверх-влево от визуального; hemisphere check (prev/next Manhattan)
+    ; принимал решение по сдвинутой точке — критично при «snipe через gap»
+    ; level 2 fold-зоны.
     LD L, (IX+BALL_X) : LD H, (IX+BALL_X+1)
-    LD DE, 8 : ADD HL, DE
+    LD DE, TSU_BALL_HALF : ADD HL, DE
     LD (TmpBallCX), HL
     LD L, (IX+BALL_Y) : LD H, (IX+BALL_Y+1)
     ADD HL, DE
@@ -2737,8 +2896,7 @@ CheckBallChainCollisions:
     SUB (HL)
     JP C, .cbc_skip_ball                  ; HSA - i < 0 → шар за стартом
     LD H, 0 : LD L, A
-    ADD HL, HL : ADD HL, HL : ADD HL, HL
-    ADD HL, HL : ADD HL, HL                ; HL = (HSA-i)*32
+    MUL_CELL_SIZE                          ; HL = (HSA-i)*CELL_SIZE
 
     LD A, (Chain0_HeadSub)
     LD E, A
@@ -2763,12 +2921,13 @@ CheckBallChainCollisions:
     BIT 7, H
     JP NZ, .cbc_skip_ball                 ; t < 0 → шар «за стартом», не виден
     PUSH HL
-    LD DE, TRACK_NUM_POINTS
+    LD DE, (CurTrackNumPoints)
     AND A
     SBC HL, DE
     POP HL
     JR C, .cbc_t_ok
-    LD HL, TRACK_NUM_POINTS - 1           ; clamp в финал
+    LD HL, (CurTrackNumPoints)
+    DEC HL                                ; clamp в финал
 .cbc_t_ok:
     ADD HL, HL : ADD HL, HL
     LD DE, TrackData
@@ -2807,6 +2966,13 @@ CheckBallChainCollisions:
     ; и next (idx i+1, tail-side) ближайших non-GAP соседей.
     ; Если ближе к next → target=i+1 (вставка между i и i+1, tail-side).
     ; Иначе target=i (вставка между i-1 и i, head-side, default).
+
+    ; --- DEBUG LOG: bbox hit. ctx=i (TmpChainIdx), data1=bullet_CX, data2=bullet_CY.
+    LD A, EVT_BBOX_HIT : LD (LogTmpType), A
+    LD A, (TmpChainIdx) : LD (LogTmpCtx), A
+    LD HL, (TmpBallCX) : LD (LogTmpData), HL
+    LD HL, (TmpBallCY) : LD (LogTmpData+2), HL
+    CALL LogEvent
 
     LD A, (TmpChainIdx)
     LD (TmpTargetIdx), A                  ; default = i
@@ -2889,6 +3055,17 @@ CheckBallChainCollisions:
     LD (TmpTargetIdx), A
 
 .hem_apply:
+    ; --- Вычисляем физическую позицию выбранного target slot (для лога) ---
+    LD A, (TmpTargetIdx)
+    CALL ComputeSlotXY                    ; → TmpHemX, TmpHemY (CENTER)
+
+    ; --- DEBUG LOG: hemisphere decision. ctx=target_idx, data1=target_X, data2=target_Y.
+    LD A, EVT_HEMI : LD (LogTmpType), A
+    LD A, (TmpTargetIdx) : LD (LogTmpCtx), A
+    LD HL, (TmpHemX) : LD (LogTmpData), HL
+    LD HL, (TmpHemY) : LD (LogTmpData+2), HL
+    CALL LogEvent
+
     PUSH IX
     POP HL
     LD DE, BallTable
@@ -2943,8 +3120,7 @@ ComputeApproachTarget:
     XOR A                                 ; clamp t→0 если HSA-i<0
 .cat_hsa_ok:
     LD H, 0 : LD L, A
-    ADD HL, HL : ADD HL, HL : ADD HL, HL
-    ADD HL, HL : ADD HL, HL                ; HL = (HSA-i)*32
+    MUL_CELL_SIZE                          ; HL = (HSA-i)*CELL_SIZE
 
     LD A, (Chain0_HeadSub)
     LD E, A
@@ -2970,23 +3146,24 @@ ComputeApproachTarget:
     LD HL, 0
 .cat_t_not_neg:
     PUSH HL
-    LD DE, TRACK_NUM_POINTS
+    LD DE, (CurTrackNumPoints)
     AND A
     SBC HL, DE
     POP HL
     JR C, .cat_t_in_range
-    LD HL, TRACK_NUM_POINTS - 1
+    LD HL, (CurTrackNumPoints)
+    DEC HL
 .cat_t_in_range:
     ADD HL, HL : ADD HL, HL
     LD DE, TrackData
     ADD HL, DE
-    LD A, (HL) : SUB 12 : LD (TmpTargetX), A : INC HL          ; ball 24x24
+    LD A, (HL) : SUB TSU_BALL_HALF : LD (TmpTargetX), A : INC HL    ; top-left = center - half
     LD A, (HL) : SBC A, 0 : LD (TmpTargetX+1), A : INC HL
     BIT 7, A                                                    ; sign bit set?
     JR Z, .cat_x_ok
     XOR A : LD (TmpTargetX), A : LD (TmpTargetX+1), A          ; clamp X >= 0
 .cat_x_ok:
-    LD A, (HL) : SUB 12 : LD (TmpTargetY), A : INC HL          ; ball 24x24
+    LD A, (HL) : SUB TSU_BALL_HALF : LD (TmpTargetY), A : INC HL    ; top-left = center - half
     LD A, (HL) : SBC A, 0 : LD (TmpTargetY+1), A
     BIT 7, A
     JR Z, .cat_y_ok
@@ -3568,7 +3745,8 @@ UpdateStallByGap:
 ; Cascade reverse: HeadSub--, underflow → HeadSub=CELL_SIZE-1, HeadSlotAbs--.
 ; ChainStalled — стоп.
 ; ================================================================
-TRACK_NUM_SLOTS       EQU TRACK_NUM_POINTS / CELL_SIZE  ; 96
+; ceil-деление — см. комментарий у LVL02_TRACK_SLOTS.
+TRACK_NUM_SLOTS       EQU (TRACK_NUM_POINTS + CELL_SIZE - 1) / CELL_SIZE
 
 MoveChain:
     ; Cascade state — цепочка стоит (instant HSA -= count в .cpt_cascade уже сделан).
@@ -3602,9 +3780,15 @@ MoveChain:
     LD (Chain0_HeadSub), A
     LD A, (Chain0_HeadSlotAbs)
     INC A
-    CP TRACK_NUM_SLOTS
-    JR C, .mc_save_slot
-    LD A, TRACK_NUM_SLOTS - 1
+    LD B, A
+    LD A, (CurTrackNumSlots)
+    CP B
+    LD A, B
+    JR Z, .mc_clamp_slot
+    JR NC, .mc_save_slot
+.mc_clamp_slot:
+    LD A, (CurTrackNumSlots)
+    DEC A
 .mc_save_slot:
     LD (Chain0_HeadSlotAbs), A
     RET
@@ -3636,13 +3820,19 @@ MoveChainAbsorb:
     LD (Chain0_HeadSub), A
     LD A, (Chain0_HeadSlotAbs)
     INC A
-    CP TRACK_NUM_SLOTS
-    JR C, .mca_save_slot
+    LD B, A
+    LD A, (CurTrackNumSlots)
+    CP B
+    LD A, B
+    JR Z, .mca_at_cap
+    JR NC, .mca_save_slot
     ; HSA at cap. HSA остаётся на cap (= TRACK_NUM_SLOTS-1), но head ball
     ; consumed: shift_left arrays + SlotsLen-=1. Continuity: old slot_t(1)
     ; at hsub=32 = (cap-1)*32+32+offsets[1] = cap*32+offsets[1]. После shift
     ; new slot_t(0) = cap*32+0+(old offsets[1]) = тот же. ✓ no jerk.
-    LD A, TRACK_NUM_SLOTS - 1
+.mca_at_cap:
+    LD A, (CurTrackNumSlots)
+    DEC A
     LD (Chain0_HeadSlotAbs), A
     CALL AbsorbHead
     RET
@@ -3767,8 +3957,7 @@ UpdateChainSprites:
     SUB (HL)
     JP C, .ucss_invisible                 ; t < 0
     LD H, 0 : LD L, A
-    ADD HL, HL : ADD HL, HL : ADD HL, HL
-    ADD HL, HL : ADD HL, HL                ; HL = (HSA-i)*32
+    MUL_CELL_SIZE                          ; HL = (HSA-i)*CELL_SIZE
 
     LD A, (Chain0_HeadSub)
     LD E, A
@@ -3794,21 +3983,22 @@ UpdateChainSprites:
     JP NZ, .ucss_invisible                ; t < 0 → шар ещё за стартом
 
     PUSH HL
-    LD DE, TRACK_NUM_POINTS
+    LD DE, (CurTrackNumPoints)
     AND A
     SBC HL, DE
     POP HL
     JR C, .ucss_t_in_range
-    LD HL, TRACK_NUM_POINTS - 1           ; clamp в финал
+    LD HL, (CurTrackNumPoints)
+    DEC HL                                ; clamp в финал
 .ucss_t_in_range:
     ; HL = t. Адрес записи трека = TrackData + 4*t.
     ADD HL, HL : ADD HL, HL
     LD DE, TrackData
     ADD HL, DE
 
-    LD A, (HL) : SUB 12 : LD (TmpChainX), A : INC HL          ; ball 24x24 top-left = center-12
+    LD A, (HL) : SUB TSU_BALL_HALF : LD (TmpChainX), A : INC HL    ; top-left = center - half
     LD A, (HL) : SBC A, 0 : LD (TmpChainX+1), A : INC HL
-    LD A, (HL) : SUB 12 : LD (TmpChainY), A : INC HL
+    LD A, (HL) : SUB TSU_BALL_HALF : LD (TmpChainY), A : INC HL
     LD A, (HL) : SBC A, 0 : LD (TmpChainY+1), A
 
     ; Цвет = Slots[i] (GAP-cell отсеян выше)
@@ -3874,7 +4064,7 @@ LoadBallsDmaPalette:
     LD BC, 64                                 ; 32 words × 2 byte
     LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    LD BC, PAGE3 : LD A, #03 : OUT (C), A
     JP (IX)
 
 ; ================================================================
@@ -3908,8 +4098,7 @@ UpdateKzFrame:
     ; head_t = HSA*32 + hsub + offset[0] (signed)
     LD A, (Chain0_HeadSlotAbs)
     LD H, 0 : LD L, A
-    ADD HL, HL : ADD HL, HL : ADD HL, HL
-    ADD HL, HL : ADD HL, HL                  ; HL = HSA*32
+    MUL_CELL_SIZE                            ; HL = HSA*CELL_SIZE
     LD A, (Chain0_HeadSub)
     LD E, A : LD D, 0
     ADD HL, DE                               ; +hsub
@@ -3924,7 +4113,8 @@ UpdateKzFrame:
     JR Z, .ukf_have_t
     LD HL, 0                                 ; t<0 → use 0
 .ukf_have_t:
-    LD DE, TRACK_NUM_POINTS - 1
+    LD DE, (CurTrackNumPoints)
+    DEC DE
     EX DE, HL
     AND A
     SBC HL, DE                               ; HL = (TRACK-1) - head_t = distance
@@ -4133,6 +4323,8 @@ DrawSubtitleText:
 CopyAtlasToPageD:
     DI
     LD (.cat_src), A
+    LD (.cat_saved_sp), SP
+    LD SP, .cat_temp_stack_top
     LD A, (.cat_src) : LD BC, PAGE2 : OUT (C), A    ; slot 2 ← source page
     LD A, #0D       : LD BC, PAGE3 : OUT (C), A     ; slot 3 ← dest page #0D
     LD HL, #8000
@@ -4140,15 +4332,19 @@ CopyAtlasToPageD:
     LD BC, #4000                                     ; 16K
     LDIR
     LD A, 2   : LD BC, PAGE2 : OUT (C), A           ; restore slot 2 = page 2
-    LD A, #60 : LD BC, PAGE3 : OUT (C), A           ; restore slot 3 = page #60 (track overflow + stack)
+    LD A, #03 : LD BC, PAGE3 : OUT (C), A ; restore slot 3 = current level TrackData page
+    LD SP, (.cat_saved_sp)
     EI
     RET
 .cat_src: DB 0
+.cat_saved_sp:   DW 0
+.cat_temp_stack: DEFS 64
+.cat_temp_stack_top:
 
 
 ; ============================================================================
 ; Z3 UNPACKER — bit-packed LZ77, Elias-gamma length, 16-bit offset.
-; См. src/Python/compress_z3.py для format спецификации.
+; См. src/compress_z3.py для format спецификации.
 ;
 ; Z3Decompress: IX = compressed src (с 2-byte header = uncompressed size LE),
 ;               DE = dest. Использует stack (PUSH/POP, CALL) — caller обязан
@@ -4252,7 +4448,7 @@ UnpackZ3Page:
     LD DE, #C000
     CALL Z3Decompress
     LD A, 2   : LD BC, PAGE2 : OUT (C), A
-    LD A, #60 : LD BC, PAGE3 : OUT (C), A
+    LD A, #03 : LD BC, PAGE3 : OUT (C), A
     LD SP, (.uz_saved_sp)
     EI
     RET
@@ -4347,7 +4543,7 @@ UnpackZX7Page:
     LD DE, #C000
     CALL Dzx7Turbo
     LD A, 2   : LD BC, PAGE2 : OUT (C), A
-    LD A, #60 : LD BC, PAGE3 : OUT (C), A
+    LD A, #03 : LD BC, PAGE3 : OUT (C), A
     LD SP, (.uzx7_saved_sp)
     EI
     RET
@@ -4393,6 +4589,8 @@ CopyAtlasToPage:
     DI
     LD (.ctp_src), A
     LD A, B : LD (.ctp_dst), A
+    LD (.ctp_saved_sp), SP                      ; safe-stack swap (Codex 2026-05-16):
+    LD SP, .ctp_temp_stack_top                  ; LDIR может писать в stack zone page #03
     LD A, (.ctp_src) : LD BC, PAGE2 : OUT (C), A
     LD A, (.ctp_dst) : LD BC, PAGE3 : OUT (C), A
     LD HL, #8000
@@ -4400,11 +4598,15 @@ CopyAtlasToPage:
     LD BC, #4000
     LDIR
     LD A, 2   : LD BC, PAGE2 : OUT (C), A
-    LD A, #60 : LD BC, PAGE3 : OUT (C), A
+    LD A, #03 : LD BC, PAGE3 : OUT (C), A
+    LD SP, (.ctp_saved_sp)
     EI
     RET
 .ctp_src: DB 0
 .ctp_dst: DB 0
+.ctp_saved_sp:   DW 0
+.ctp_temp_stack: DEFS 64
+.ctp_temp_stack_top:
 
 CopyGoldenToShadow:
     LD BC, FMADDR : XOR A : OUT (C), A
@@ -4551,13 +4753,15 @@ BlitChainToShadow:
     JP .bcs_advance
 
 .bcs_draw:
-    ; HL ← &BcsCacheStruct[i*6]; загружаем кэш в Bcs* temp vars
+    ; HL ← &BcsCacheStruct[i*7]; загружаем кэш в Bcs* temp vars
     LD A, (TmpChainIdx)
     LD H, 0 : LD L, A
     LD D, H : LD E, L                          ; DE = i
     ADD HL, HL                                 ; HL = i*2
-    ADD HL, DE                                 ; HL = i*3
-    ADD HL, HL                                 ; HL = i*6
+    ADD HL, HL                                 ; HL = i*4
+    ADD HL, DE                                 ; HL = i*5
+    ADD HL, DE                                 ; HL = i*6
+    ADD HL, DE                                 ; HL = i*7
     LD DE, BcsCacheStruct
     ADD HL, DE
     LD A, (HL) : LD (BcsDstLow),    A : INC HL
@@ -4565,11 +4769,12 @@ BlitChainToShadow:
     LD A, (HL) : LD (BcsPageOver),  A : INC HL
     LD A, (HL) : LD (BcsNumLines),  A : INC HL
     LD A, (HL) : LD (BcsClipTop),   A : INC HL
-    LD A, (HL) : LD (BcsXOdd),      A
+    LD A, (HL) : LD (BcsXOdd),      A : INC HL
+    LD A, (HL) : LD (BcsClipLeft),  A
 
-    ; --- DMA setup: NumLines-1, src offset = ClipTop*512 ---
+    ; --- DMA setup: NumLines-1, src lo=ClipLeft, hi=ClipTop*2 (full burst 9 words из global) ---
     LD A, (BcsNumLines) : DEC A : LD BC, DMANUM : OUT (C), A
-    XOR A : LD BC, DMASADL : OUT (C), A
+    LD A, (BcsClipLeft) : LD BC, DMASADL : OUT (C), A
     LD A, (BcsClipTop)
     ADD A, A                                  ; src_high = ClipTop * 2
     LD BC, DMASADH : OUT (C), A
@@ -4677,8 +4882,7 @@ BcsPreClassify:
 
     LD H, 0
     LD L, A
-    ADD HL, HL : ADD HL, HL : ADD HL, HL
-    ADD HL, HL : ADD HL, HL                    ; HL = (HSA-i)*32
+    MUL_CELL_SIZE                              ; HL = (HSA-i)*CELL_SIZE
 
     LD A, (Chain0_HeadSub)
     LD E, A : LD D, 0
@@ -4702,12 +4906,13 @@ BcsPreClassify:
 
     ; Clamp t to TRACK_NUM_POINTS-1 (чтобы хвост на конце трека не лез за границу)
     PUSH HL
-    LD DE, TRACK_NUM_POINTS
+    LD DE, (CurTrackNumPoints)
     AND A
     SBC HL, DE
     POP HL
     JR C, .bpc_t_in
-    LD HL, TRACK_NUM_POINTS - 1
+    LD HL, (CurTrackNumPoints)
+    DEC HL
 .bpc_t_in:
     ADD HL, HL : ADD HL, HL                    ; t*4 (TrackData stride)
     LD DE, TrackData
@@ -4717,10 +4922,24 @@ BcsPreClassify:
     LD A, (HL) : SUB DMA_SPRITE_HALF : LD (TmpChainY), A   : INC HL
     LD A, (HL) : SBC A, 0            : LD (TmpChainY+1), A
 
-    ; --- Horizontal: X out of [0..DMA_X_MAX-1] → PRESERVE ---
+    ; --- Horizontal: ClipLeft для negative X (partial-render), preserve если совсем off ---
+    XOR A
+    LD (BcsClipLeft), A
     LD HL, (TmpChainX)
     BIT 7, H
-    JP NZ, .bpc_preserve
+    JR Z, .bpc_x_not_neg
+    LD A, H
+    INC A
+    JP NZ, .bpc_preserve                       ; X_high != #FF → слишком далеко влево
+    LD A, L
+    NEG                                         ; A = -X (1..255)
+    CP BALL_PIX
+    JP NC, .bpc_preserve                       ; -X >= BALL_PIX → ball полностью off-screen
+    AND #FE                                     ; clamp ClipLeft к чётному (DMA X-granularity)
+    LD (BcsClipLeft), A
+    XOR A : LD (TmpChainX), A : LD (TmpChainX+1), A     ; clamp X=0
+.bpc_x_not_neg:
+    LD HL, (TmpChainX)
     LD DE, DMA_X_MAX
     AND A
     SBC HL, DE
@@ -4798,13 +5017,15 @@ BcsPreClassify:
     AND #FE
     LD (BcsDstLow), A
 
-    ; --- Save cache[i] = [DstLow, DstMid, PageOver, NumLines, ClipTop, XOdd] ---
+    ; --- Save cache[i*7] = [DstLow, DstMid, PageOver, NumLines, ClipTop, XOdd, ClipLeft] ---
     LD A, (TmpChainIdx)
     LD H, 0 : LD L, A
-    LD D, H : LD E, L
-    ADD HL, HL
-    ADD HL, DE                                 ; i*3
-    ADD HL, HL                                 ; i*6
+    LD D, H : LD E, L                          ; DE = i
+    ADD HL, HL                                 ; *2
+    ADD HL, HL                                 ; *4
+    ADD HL, DE                                 ; *5
+    ADD HL, DE                                 ; *6
+    ADD HL, DE                                 ; *7
     LD DE, BcsCacheStruct
     ADD HL, DE
     LD A, (BcsDstLow)    : LD (HL), A : INC HL
@@ -4812,7 +5033,8 @@ BcsPreClassify:
     LD A, (BcsPageOver)  : LD (HL), A : INC HL
     LD A, (BcsNumLines)  : LD (HL), A : INC HL
     LD A, (BcsClipTop)   : LD (HL), A : INC HL
-    LD A, (BcsXOdd)      : LD (HL), A
+    LD A, (BcsXOdd)      : LD (HL), A : INC HL
+    LD A, (BcsClipLeft)  : LD (HL), A
 
     LD A, BCS_DRAW
     JP .bpc_set_flag
@@ -5188,9 +5410,9 @@ UpdateChainTSUSprites:
     LD A, (TmpChainIdx)
     CALL ComputeSlotXY                         ; → TmpHemX, TmpHemY
 
-    ; SPSIZ24 halfsize=12. Clamp X/Y к 0 при negative.
+    ; SPSIZ24 halfsize = TSU_BALL_HALF. Clamp X/Y к 0 при negative.
     LD HL, (TmpHemX)
-    LD DE, 12
+    LD DE, TSU_BALL_HALF
     AND A
     SBC HL, DE
     BIT 7, H
@@ -5200,7 +5422,7 @@ UpdateChainTSUSprites:
     LD (TmpChainX), HL
 
     LD HL, (TmpHemY)
-    LD DE, 12
+    LD DE, TSU_BALL_HALF
     AND A
     SBC HL, DE
     BIT 7, H
@@ -5647,7 +5869,7 @@ HandleMouse:
     ; Нарастающий фронт 0→1 = выстрел ровно один раз при нажатии.
     LD BC, MOUSE_BTN
     IN A, (C)
-    AND %00000001                  ; ЛКМ — бит 0 в Unreal
+    CALL NormalizeMouseAction
     LD HL, MouseBtnPrev
     LD B, (HL)
     LD (HL), A
@@ -5656,8 +5878,36 @@ HandleMouse:
     LD A, B
     OR A
     JR NZ, .no_shot                ; ЛКМ была нажата в прошлом кадре → не первый кадр
-    CALL ShootBall
+    LD A, (Scene)
+    OR A
+    CALL Z, ShootBall
 .no_shot:
+    RET
+
+NormalizeMouseAction:
+    CPL
+    AND %00000011
+    LD E, A
+    LD A, (MouseBtnFireFlag)
+    OR A
+    JR NZ, .nma_have_mask
+    LD A, E
+    OR A
+    RET Z
+    BIT 0, A
+    JR NZ, .nma_pick_bit0
+    LD A, %00000010
+    JR .nma_store_mask
+.nma_pick_bit0:
+    LD A, %00000001
+.nma_store_mask:
+    LD (MouseBtnFireFlag), A
+.nma_have_mask:
+    LD B, A
+    LD A, E
+    AND B
+    RET Z
+    LD A, 1
     RET
 
 ; ================================================================
@@ -5708,10 +5958,35 @@ InitPalette:
     LD HL, RTPAL_FROG      : LD DE, #0000 : LD BC, 512 : LDIR
     LD HL, RTPAL_CURSOR    : LD DE, #0020 : LD BC, 32  : LDIR
     LD HL, RTPAL_BALLS     : LD DE, #0040 : LD BC, 192 : LDIR
-    LD HL, RTPAL_BG_LEVEL1 : LD DE, #0100 : LD BC, 256 : LDIR
+    LD HL, (CurBgPalSrc)   : LD DE, #0100 : LD BC, 256 : LDIR    ; level-specific bg palette
     LD BC, FMADDR : XOR A : OUT (C), A
-    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    LD BC, PAGE3 : LD A, #03 : OUT (C), A
     JP (IX)
+
+; ================================================================
+; SetupCurLevelPaging — обновить CurTrackPage/CurZx7Base/CurBgPalSrc
+; на основе CurStageIdx. Вызывается из LevelSelect_GotoGame перед
+; UnpackZX7_9Pages/InitPalette.
+; ================================================================
+SetupCurLevelPaging:
+    LD A, (CurStageIdx)
+    OR A
+    JR NZ, .sclp_lvl2
+    LD A, LVL01_TRACK_PAGE : LD (CurTrackPage), A
+    LD A, LVL01_ZX7_BASE   : LD (CurZx7Base), A
+    LD HL, RTPAL_BG_LEVEL1 : LD (CurBgPalSrc), HL
+    LD HL, TRACK_NUM_POINTS : LD (CurTrackNumPoints), HL
+    LD A, TRACK_NUM_SLOTS   : LD (CurTrackNumSlots), A
+    RET
+.sclp_lvl2:
+    ; Track data копируется в page #03 (GotoGame `CopyAtlasToPage(#04→#03)`), поэтому
+    ; CurTrackPage = #03 даже для level 2 — stack в slot 3 stays в physical page #03.
+    LD A, LVL01_TRACK_PAGE : LD (CurTrackPage), A
+    LD A, LVL02_ZX7_BASE   : LD (CurZx7Base), A
+    LD HL, RTPAL_BG_LEVEL2 : LD (CurBgPalSrc), HL
+    LD HL, LVL02_TRACK_POINTS : LD (CurTrackNumPoints), HL
+    LD A, LVL02_TRACK_SLOTS   : LD (CurTrackNumSlots), A
+    RET
 
 ; ================================================================
 ; RestoreLevel1BgPalette — final restore for level_01 canvas colors.
@@ -5723,12 +5998,12 @@ RestoreLevel1BgPalette:
     LD BC, PAGE3 : LD A, RUNTIME_PAL_PAGE : OUT (C), A
     LD BC, FMADDR : LD A, FM_EN : OUT (C), A
     LD BC, PALSEL : XOR A : OUT (C), A
-    LD HL, RTPAL_BG_LEVEL1
+    LD HL, (CurBgPalSrc)              ; level-specific bg palette source
     LD DE, #0100
     LD BC, 256
     LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    LD BC, PAGE3 : LD A, #03 : OUT (C), A
     JP (IX)
 
 ; ================================================================
@@ -5745,7 +6020,7 @@ LoadGameOverPalette:
     LD BC, 32
     LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    LD BC, PAGE3 : LD A, #03 : OUT (C), A
     JP (IX)
 
 ; ================================================================
@@ -5762,7 +6037,7 @@ RestoreRedBallPalette:
     LD BC, 32
     LDIR
     LD BC, FMADDR : XOR A : OUT (C), A
-    LD BC, PAGE3 : LD A, #60 : OUT (C), A
+    LD BC, PAGE3 : LD A, #03 : OUT (C), A
     JP (IX)
 
 
@@ -5806,7 +6081,7 @@ SmoothMouseY: DW MOUSE_INIT_Y ; low-pass smoothed Y
 MouseAbsY:  DW MOUSE_INIT_Y
 MouseMoved:       DB 0  ; флаг: 1 если мышь двигалась в этом кадре
 MouseBtnPrev:     DB 3  ; "нейтральное" состояние кнопок мыши (запомнено в InitGame)
-MouseBtnFireFlag: DB 0  ; 1 = выстрел уже сработал на текущем нажатии (debounce)
+MouseBtnFireFlag: DB 0  ; persistent action-button mask chosen by first pressed mouse button
 TmpAngle:         DB 0  ; временный угол для SpawnBall
 TmpSpeed:         DB 0  ; временная скорость для SpawnBall
 TmpChainX:        DW 0  ; top-left X (UpdateChainSprites)
@@ -5859,6 +6134,7 @@ BallTable:
 BallTargetIdx:
     DS MAX_BALLS                        ; цель chain-индекс для approach-state шаров
 
+
 ; --- ChainStateBlock для Chain0 (slot-array model, единственный источник правды).
 Chain0_Slots:           DS MAX_SLOTS_PER_CHAIN ; цвет либо GAP_MARKER (Init заполнит GAP)
 Chain0_SlotOffsets:     DS MAX_SLOTS_PER_CHAIN ; signed sub-cell offset для match/insert anim
@@ -5875,6 +6151,26 @@ Chain0_ExplodingMarker: DS MAX_SLOTS_PER_CHAIN ; GAP_STOP или GAP_CASCADE —
 Chain0_HeadSlotAbs:     DB 0                   ; абс. track-slot для Chain0_Slots[0]
 Chain0_HeadSub:         DB 0                   ; 0..CELL_SIZE-1 sub-cell progress головы
 Chain0_SlotsLen:        DB 0                   ; длина active range
+
+; --- Circular game log (debug aid для F12-dump). 128 entries × 8 bytes = 1024 b.
+; Каждое событие: [type, ctx, frame, _, d1lo, d1hi, d2lo, d2hi].
+; Перед CALL LogEvent в LogTmp* записываются type/ctx/data1/data2.
+GAMELOG_ENTRY_BYTES     EQU 8
+GAMELOG_ENTRIES         EQU 256
+GAMELOG_IDX_MASK        EQU GAMELOG_ENTRIES - 1   ; 0xFF
+GAMELOG_BYTES           EQU GAMELOG_ENTRY_BYTES * GAMELOG_ENTRIES   ; 2 KB
+; Event types (1..) — 0 = пустая запись.
+EVT_BBOX_HIT            EQU 1     ; bbox-hit в CheckBallChainCollisions. ctx=hit_i. d1=bullet_CX, d2=bullet_CY
+EVT_HEMI                EQU 2     ; hemisphere decision. ctx=final target_idx. d1=target_X (px), d2=target_Y (px)
+EVT_INSERT              EQU 3     ; вызов InsertChainBall. ctx=insert_idx. d1=color, d2=SlotsLen|HSA
+EVT_APPROACH_END        EQU 4     ; шар прибыл к target. ctx=ball_idx. d1=BallX, d2=BallY (top-left)
+EVT_SHOT_FIRED          EQU 5     ; bullet spawn. ctx=ball_idx. d1=BallX, d2=BallY
+
+GameLogIdx:             DB 0                       ; 0..127 (write index mod 128)
+LogTmpType:             DB 0
+LogTmpCtx:              DB 0
+LogTmpData:             DS 4                       ; data1.lo, data1.hi, data2.lo, data2.hi
+GameLog:                DS GAMELOG_BYTES           ; ring buffer 1 KB
 
 ; ================================================================
 ; ДАННЫЕ ПАЛИТРЫ И ТАБЛИЦ — РАЗМЕЩЕНЫ ПЕРЕД ТРЕКОМ.
@@ -5951,22 +6247,11 @@ BallsDmaPalette:
 GameOverPalette:
     INCBIN "gameover_pal.bin"         ; 32 байта = 16 CRAM words. Замещает red ball palette в state 2.
 
-; Трек уровня. Spgbld page 2 ограничена 16K (0x8000-0xBFFF).
-; Делим level_01.bin на 2 части: [0..N1] в slot 2 page 2, [N1..end] в slot 3 page #0C.
-; ВАЖНО: ComputeSlotXY и killzone-init читают через virtual address 0x969C+ который
-; пересекает 0xC000 boundary — runtime PAGE3=#0C maps slot 3 к нужным байтам.
-; ORG #969C принудительно — иначе sjasmplus emit может сдвинуться при изменениях в коде
-; и track[3095] не попадёт точно на 0xC6F8 (killzone) в overflow page.
-    ORG #969C
+    SLOT 3 : PAGE #03 : ORG #C000
 TrackData:
-    INCBIN "level_01.bin", 0, 10596    ; first 10596 bytes → 0x969C..0xBFFF (slot 2 page 2)
-TRACK_DATA_P1_END:
-
-    SLOT 3 : PAGE #0C : ORG #C000      ; явно switch к slot 3 page #60 для overflow
-TrackOverflow:
-    INCBIN "level_01.bin", 10596       ; remaining 1790 bytes → 0xC000..0xC6FD
+    INCBIN "level_01.bin"
 TrackEnd:
-TRACK_NUM_POINTS EQU (TrackEnd - TrackOverflow + 10596 - 2) / 4  ; = 3096
+TRACK_NUM_POINTS EQU (TrackEnd - TrackData - 2) / 4
 
     SLOT 2 : PAGE 2                    ; вернуться в page 2 для следующих ORG'ов
 

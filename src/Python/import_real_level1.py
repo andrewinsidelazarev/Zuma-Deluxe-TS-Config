@@ -30,6 +30,9 @@ CROP_X = (SRC_W - CROP_W) // 2                # = 20
 SCALE = SCREEN_H / SRC_H                      # = 0.6 (uniform)
 PAGE_BYTES = 16384
 LINE_STRIDE = 512
+BALL_PIX = 20
+CELL_SIZE = 32
+ENTRY_OFFSCREEN_MARGIN = BALL_PIX + 4
 
 # --- 1. Parse spiral.dat (= curve data) ---
 def parse_dat(path):
@@ -85,7 +88,37 @@ def resample(pts, step=1.0):
             if seg < 1e-9: break
     return out
 
+def ensure_offscreen_entry_leadin(pts, margin=ENTRY_OFFSCREEN_MARGIN):
+    """Prepend a cell-aligned off-screen lead-in only when the entry point is still visible."""
+    if len(pts) < 2:
+        return pts
+
+    x0, y0 = pts[0]
+    if x0 <= -margin or x0 >= SCREEN_W + margin or y0 <= -margin or y0 >= SCREEN_H + margin:
+        return pts
+
+    x1, y1 = pts[1]
+    dx = x0 - x1
+    dy = y0 - y1
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return pts
+    dx /= length
+    dy /= length
+
+    lead = []
+    x, y = x0, y0
+    while len(lead) < CELL_SIZE or not (x <= -margin or x >= SCREEN_W + margin or y <= -margin or y >= SCREEN_H + margin):
+        x += dx
+        y += dy
+        lead.append((x, y))
+        if len(lead) > 128:
+            break
+    lead.reverse()
+    return lead + pts
+
 pts_resampled = resample(pts_screen, step=1.0)
+pts_resampled = ensure_offscreen_entry_leadin(pts_resampled)
 print(f"Resampled to 1px: {len(pts_resampled)} pts. End at ({pts_resampled[-1][0]:.0f}, {pts_resampled[-1][1]:.0f})")
 
 # --- 4. Save level_01.bin ---

@@ -154,6 +154,8 @@
     <li><a href="#zuma">15. Zuma как пример</a></li>
     <li><a href="#advanced">16. Продвинутые техники</a></li>
     <li><a href="#lessons-2026-05-08">17. Уроки 2026-05-08 — explosion + race</a></li>
+    <li><a href="#harness">20. Z80 harness — детерминированная отладка без железа</a></li>
+    <li><a href="#ram-log">21. Circular RAM log — отладка редких runtime багов через F12-дамп</a></li>
     <li><a href="#ports-ref">Приложение: порты</a></li>
   </ul>
   <h2>Об учебнике</h2>
@@ -1400,6 +1402,223 @@ TNUM_H = (TNUM &gt;&gt; 8) | (SPAL &lt;&lt; 4)   <span class="cmt">; SPAL=4 → 
 </code></pre>
 
 <p><b>Урок:</b> для feature специфической для одного game state, переиспользовать существующие descriptors часто проще чем выделять новые. Проверить только что descriptors конфликтующего use-case'а off-screen в этом state.</p>
+
+<h2 id="harness">20. Z80 harness — детерминированная отладка без железа</h2>
+
+<p>На определённом этапе разработки выяснилось, что цикл <b>sjasmplus → spgbld → Unreal → скриншот → анализ</b> отнимает 30–60 секунд на каждую итерацию проверки, причём анализ ведётся глазами по картинке. Для логических ошибок (порядок инициализации, очистка памяти, layout-overflow и т. п.) это слишком долго и слишком неточно — глаз не отличит «512 байт зануляются» от «510 байт зануляются + 2 байта garbage остаются».</p>
+
+<p><b>Harness</b> (англ. «сбруя») — это Python-программа, которая запускает реальный собранный Z80-код в эмуляторе процессора плюс модели тех частей TS-Config, которые этот код использует: страничная память, FM_EN bank, порты ввода-вывода. Запуск ровно того же бинарника, что попадает в .spg, но без «выхода на железо».</p>
+
+<h3>Преимущества</h3>
+<ul>
+  <li><b>Скорость.</b> Один прогон функции (например <code>LevelSelect_Init</code> до выхода) занимает 30–50 мс вместо 30–60 секунд через Unreal.</li>
+  <li><b>Детерминизм.</b> Можно <i>заранее наполнить</i> SFILE/CRAM/RAM конкретными байтами («представь, что игра только что закончилась с такой-то цепью») и проверить, что код корректно их обрабатывает.</li>
+  <li><b>Точность проверки.</b> После прогона читаем байты SFILE/CRAM/любой страницы и сравниваем с ожидаемыми. Это <b>byte-level assertion</b>, в отличие от «на скриншоте вроде нормально».</li>
+  <li><b>Трассировка.</b> Можно включить <code>trace=True</code> и получить лог каждой инструкции: PC, мнемоника, изменения регистров. Видно <i>в какой строке</i> что-то сломалось.</li>
+  <li><b>Repro для редких сценариев.</b> Баги, которые на железе ловят раз в десятки минут игры (race condition, edge-case в цепочке), в harness воспроизводятся одной строкой setup.</li>
+  <li><b>Безопасность экспериментов.</b> На железе сломанная сборка может зависнуть весь эмулятор, сожрать слот стека, etc. Harness просто кидает Python exception с PC и trace.</li>
+</ul>
+
+<h3>Архитектура (для TS-Config)</h3>
+<p>Минимальный harness состоит из трёх блоков:</p>
+<ol>
+  <li><b>Z80 core.</b> Pure-Python реализация инструкций Z80 (мы используем <code>_z80_lib_cburbridge</code>). Декодирует opcode, выполняет, обновляет регистры/флаги, считает t-states.</li>
+  <li><b>Memory model.</b> 64 КБ адресное пространство, поделённое на 4 слота × 16 КБ; «физическая» память на 256 страниц по 16 КБ; таблица <code>pages[slot] = page</code>, которая определяет, какая физическая страница видна в каком слоте. <code>read(addr)</code> и <code>write(addr)</code> делают page-aware lookup.</li>
+  <li><b>I/O ports.</b> Перехват <code>IN (C)</code> и <code>OUT (C),A</code>. Записи в PAGE0..3 (#10AF..#13AF) меняют <code>pages[slot]</code>. Запись в FMADDR (#15AF) с битом #10 включает FM_EN — после этого <code>read/write</code> по адресам #0000..#03FF идут в отдельные банки CRAM (#0000..#01FF) и SFILE (#0200..#03FF). Mouse, RTC, Kempston — отдельные обработчики.</li>
+</ol>
+
+<p>SPG loader парсит <code>spgbld.ini</code> и кладёт байты файлов в нужные страницы — то же самое делает железо при загрузке .spg.</p>
+
+<h3>Что эмулировать необязательно</h3>
+<p>Harness специально <b>не</b> моделирует:</p>
+<ul>
+  <li><b>TSU rendering.</b> Не превращаем descriptors в пиксели. Для проверки логики (descriptor написан правильно? все байты на своих местах?) достаточно прочитать SFILE после прогона. Видимый результат на экране проверяется уже на железе как финальный sanity check.</li>
+  <li><b>Точный пиксель-clock и видеоразвёртку.</b> Тайминги фрейма (50 Гц, frame INT) можно симулировать «вручную» — счётчиком кадров, без настоящей развёртки.</li>
+  <li><b>DMA-engine.</b> Делать модель из ~10 портов DMA имеет смысл только если конкретный баг в DMA. Для большинства задач достаточно треть <code>OUT</code>-портов в логе.</li>
+</ul>
+
+<h3>Пример: проверка изоляции SFILE между сценами</h3>
+<p>В Zuma две сцены: Level Select (Scene=1) и Game (Scene=0). Они <b>делят</b> область TSU-дескрипторов <code>#0200..#03F7</code> — на каждой сцене там свои спрайты. По правилу изоляции каждая сцена при входе обязана <b>полностью очистить</b> чужие дескрипторы, чтобы они не «висели» поверх. <code>InitGame</code> это делает, а в <code>LevelSelect_Init</code> очистки изначально не было — после Game Over → возврат на меню в SFILE могли остаться активные chain/ball descriptors.</p>
+
+<p>Static disasm показал, что я добавил правильный код:</p>
+<pre><code>.lsi_clr1:  <span class="kw">LD</span> (HL), 0 : <span class="kw">INC</span> HL : <span class="kw">DJNZ</span> .lsi_clr1  <span class="cmt">; 255 byte</span>
+.lsi_clr2:  <span class="kw">LD</span> (HL), 0 : <span class="kw">INC</span> HL : <span class="kw">DJNZ</span> .lsi_clr2  <span class="cmt">; ещё 255 byte</span>
+</code></pre>
+
+<p>Но static disasm не доказывает, что в <i>runtime</i> цикл действительно занулит SFILE — что если FM_EN не включён, что если HL стартует с неверного адреса, что если регистр B перезатёрся раньше? Это runtime-инвариант, и проверять его нужно прогоном:</p>
+
+<pre><code><span class="kw">def</span> test_isolation():
+    emu = ZumaTSEmulator()
+    <span class="cmt"># Залить SFILE «мусором» — имитация stale Game state.</span>
+    <span class="kw">for</span> off <span class="kw">in</span> range(0x0200, 0x03FE):
+        emu.mem.sfile[off - 0x0200] = 0xAA
+
+    <span class="cmt"># Запустить LevelSelect_Init.</span>
+    emu.call(emu.sym["LevelSelect_Init"], max_steps=20000)
+
+    <span class="cmt"># Прочитать SFILE и убедиться, что все 510 байт = 0.</span>
+    post = emu.sfile_dump()
+    <span class="kw">assert</span> all(b == 0 <span class="kw">for</span> b <span class="kw">in</span> post[:510]), "SFILE not cleared!"
+    print("PASS: SFILE fully cleared (510/510 bytes zeroed)")</code></pre>
+
+<p>Выход:</p>
+<pre><code>[before LS_Init] SFILE #0200..#03FD: 510 bytes = 0xAA (garbage)
+[call] LevelSelect_Init @ #88FD
+[after  loop] SFILE #0200..#03FD: 510 zeros, 0 still-garbage bytes
+PASS: SFILE fully cleared (510/510 bytes zeroed, isolation works)</code></pre>
+
+<p>За одно нажатие Enter мы получили <b>гарантию</b>, что temporal isolation работает — без сборки, без запуска Unreal, без скриншота, без «вроде нормально».</p>
+
+<h3>Когда harness применим, когда нет</h3>
+
+<p><b>Применим</b> для отладки:</p>
+<ul>
+  <li>Порядок инициализации (palette → game vs game → palette).</li>
+  <li>Очистка/изоляция памяти между сценами.</li>
+  <li>Cell physics, chain logic, collision-detection — любая чистая Z80-арифметика.</li>
+  <li>Layout overflow: после сборки прочитать .sym, сравнить адреса labels с границами TrackData/SFILE/etc.</li>
+  <li>Регрессии после рефакторинга: snapshot state в good baseline, тот же snapshot в bad — diff даёт <b>first divergent byte</b>.</li>
+</ul>
+
+<p><b>Не подходит</b> для:</p>
+<ul>
+  <li>Визуальных багов — «спрайт мигает», «цвет неправильный». Глаз нужен.</li>
+  <li>Hardware-specific timing: race TSU writes vs display refresh, точная синхронизация DMA. Можно частично через t-state count, но точнее на железе.</li>
+  <li>Эстетических решений: «эта анимация слишком быстрая», «гало вокруг шара не такое». Это качественные оценки.</li>
+</ul>
+
+<h3>Связь с SOP отладки регрессий</h3>
+<p>Harness — это конкретная реализация шага 5 SOP «Минимальный fix → harness red→green → metal»: до фикса harness падает (FAIL), после фикса проходит (PASS), и только потом сборка идёт на железо. Симметрично — в шаге 3 «Transform/pipeline verify» harness исполняет существующий asm-декомпрессор (Dzx7Turbo и т. п.) на bad-build данных и сравнивает выход с golden reference, без переписывания декомпрессора на Python.</p>
+
+<p><b>Главное правило отладки</b> Codex'а — «<i>rejected hypothesis должна иметь причину в виде байта, состояния или трассы</i>». Harness — это инструмент, который даёт <b>байт</b> и <b>трассу</b> в виде Python output, на любой стадии прогона, без необходимости открывать Unreal debugger или читать дамп.</p>
+
+<h2 id="ram-log">21. Circular RAM log — отладка редких runtime багов через F12-дамп</h2>
+
+<p>Бывают баги, которые <b>не воспроизводятся в harness'е и Python-симуляторе</b>, потому что требуют сочетания факторов реального времени: IRQ, физика цепи, поведение игрока. Trial-and-error по 30 минут на круг — тупик. Альтернативный подход — <b>circular log в ОЗУ + F12-дамп</b>.</p>
+
+<p>В 2026-05-16 такой лог поймал баг «<i>шар улетает сильно влево через gap</i>» на level 2 за одну сессию: HEMI зафиксировал target=(130, 29), APPR_END показал прибытие в (60, 31) — drift 65 px, мгновенное доказательство moving-target physics. До этого баг 2 дня не давался trial-and-error'ом.</p>
+
+<h3>Идея</h3>
+
+<p>В asm-коде заводим ring buffer (256 записей × 8 байт = 2 KB), в ключевых точках логики добавляем <code>CALL LogEvent</code> со снимками state. Игрок играет до проявления бага, делает F12-dump через эмулятор, и парсер на хосте читает последние ~256 событий перед глюком. Никакого пошагового breakpoint'а — реконструируем по log'у.</p>
+
+<h3>Структура записи (8 байт)</h3>
+
+<pre><code>+0  type    (1 b)  ; event id (0 = пустой слот, 1..N = типы)
++1  ctx     (1 b)  ; ball_idx / slot_idx / контекстный байт
++2  frame   (1 b)  ; FrameCounter snapshot (time-correlation)
++3  _       (1 b)  ; reserved (выравнивание под 8)
++4..5      (word)  ; data1 (LE)
++6..7      (word)  ; data2 (LE)</code></pre>
+
+<h3>Переменные</h3>
+
+<pre><code>GameLogIdx:  <span class="kw">DB</span> 0                      <span class="cmt">; 0..255, write idx mod 256</span>
+LogTmpType:  <span class="kw">DB</span> 0
+LogTmpCtx:   <span class="kw">DB</span> 0
+LogTmpData:  <span class="kw">DS</span> 4                      <span class="cmt">; d1lo, d1hi, d2lo, d2hi</span>
+GameLog:     <span class="kw">DS</span> 256 * 8                <span class="cmt">; 2 KB ring buffer</span></code></pre>
+
+<h3>LogEvent — записывающая процедура</h3>
+
+<p>Сохраняет все регистры (4-байтный PUSH/POP). Caller заполняет <code>LogTmp*</code> перед <code>CALL LogEvent</code>.</p>
+
+<pre><code>LogEvent:
+    <span class="kw">PUSH</span> AF : <span class="kw">PUSH</span> BC : <span class="kw">PUSH</span> DE : <span class="kw">PUSH</span> HL
+    <span class="kw">LD</span> A, (GameLogIdx)
+    <span class="kw">LD</span> H, 0 : <span class="kw">LD</span> L, A
+    <span class="kw">ADD</span> HL, HL : <span class="kw">ADD</span> HL, HL : <span class="kw">ADD</span> HL, HL   <span class="cmt">; HL = idx * 8</span>
+    <span class="kw">LD</span> DE, GameLog
+    <span class="kw">ADD</span> HL, DE                              <span class="cmt">; HL = &amp;entry</span>
+    <span class="kw">LD</span> A, (LogTmpType)   : <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> A, (LogTmpCtx)    : <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">LD</span> A, (FrameCounter) : <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL
+    <span class="kw">XOR</span> A : <span class="kw">LD</span> (HL), A : <span class="kw">INC</span> HL             <span class="cmt">; reserved</span>
+    <span class="kw">EX</span> DE, HL                              <span class="cmt">; DE = &amp;entry+4</span>
+    <span class="kw">LD</span> HL, LogTmpData : <span class="kw">LD</span> BC, 4 : <span class="kw">LDIR</span>
+    <span class="kw">LD</span> A, (GameLogIdx) : <span class="kw">INC</span> A : <span class="kw">LD</span> (GameLogIdx), A
+    <span class="kw">POP</span> HL : <span class="kw">POP</span> DE : <span class="kw">POP</span> BC : <span class="kw">POP</span> AF
+    <span class="kw">RET</span></code></pre>
+
+<h3>Где хучить в Zuma-движке</h3>
+
+<table border="1" cellspacing="0" cellpadding="6">
+<tr><th>Event</th><th>Точка вызова</th><th>data1</th><th>data2</th></tr>
+<tr><td>SHOT_FIRED</td><td>bullet spawn (после установки BALL_X/Y)</td><td>BallX</td><td>BallY</td></tr>
+<tr><td>BBOX_HIT</td><td>bbox-pass в CheckBallChainCollisions, перед hemisphere</td><td>bullet_CX</td><td>bullet_CY</td></tr>
+<tr><td>HEMI</td><td>после hemisphere decision (target_idx выбран)</td><td>target_X</td><td>target_Y (через ComputeSlotXY)</td></tr>
+<tr><td>INSERT</td><td>entry InsertChainBall</td><td>color</td><td>(HSA&lt;&lt;8) | SlotsLen</td></tr>
+<tr><td>APPR_END</td><td>перед InsertChainBall в approach physics</td><td>BallX</td><td>BallY (top-left прибытия)</td></tr>
+</table>
+
+<h3>Пример хука — bullet bbox-hit</h3>
+
+<p>7 инструкций на сайт лога:</p>
+
+<pre><code><span class="kw">LD</span> A, EVT_BBOX_HIT   : <span class="kw">LD</span> (LogTmpType), A
+<span class="kw">LD</span> A, (TmpChainIdx)  : <span class="kw">LD</span> (LogTmpCtx), A
+<span class="kw">LD</span> HL, (TmpBallCX)   : <span class="kw">LD</span> (LogTmpData), HL
+<span class="kw">LD</span> HL, (TmpBallCY)   : <span class="kw">LD</span> (LogTmpData+2), HL
+<span class="kw">CALL</span> LogEvent</code></pre>
+
+<h3>Парсер дампа (Python)</h3>
+
+<p>Адреса берутся из <code>--sym</code> после сборки (могут смещаться при правках кода).</p>
+
+<pre><code>with open('111', 'rb') as f: dump = f.read()
+GAMELOG_IDX_ADDR = 0x8B84   # из zuma_new_spg.sym
+GAMELOG_ADDR     = 0x8B8B
+idx = dump[GAMELOG_IDX_ADDR]
+for i in range(256):
+    real_idx = (idx + i) % 256          # oldest → newest
+    base = GAMELOG_ADDR + real_idx * 8
+    type_, ctx, frame, _, d1l, d1h, d2l, d2h = dump[base:base+8]
+    if type_ == 0: continue
+    d1 = d1l | (d1h &lt;&lt; 8); d2 = d2l | (d2h &lt;&lt; 8)
+    print(f'type={type_} ctx={ctx} frame={frame} d1={d1} d2={d2}')</code></pre>
+
+<h3>Ключевое сравнение для moving-target баг</h3>
+
+<p>Сравнить <code>HEMI.target_pos</code> и <code>APPR_END.ball_pos</code> (center = top-left + TSU_BALL_HALF):</p>
+
+<ul>
+<li>drift &lt; 20 px — норма (approach physics корректно догоняет slot)</li>
+<li><b>drift &gt; 30 px — moving-target glitch</b>: slot физически уехал во время полёта (offset decay / HSA change / match-3 cascade), шар догнал его в новой позиции</li>
+</ul>
+
+<h3>Auto-freeze (опционально)</h3>
+
+<p>Чтобы важная цепочка событий не вытеснилась последующей игрой, добавить freeze-флаг:</p>
+
+<pre><code>GameLogFrozen: <span class="kw">DB</span> 0
+LogEvent:
+    <span class="kw">LD</span> A, (GameLogFrozen) : <span class="kw">OR</span> A : <span class="kw">RET</span> NZ   <span class="cmt">; уже заморожен</span>
+    ...</code></pre>
+
+<p>И в коде детекции глюка (например, при <code>|HEMI.target_X - bullet_X| &gt; 40</code>):</p>
+
+<pre><code><span class="kw">LD</span> A, 1 : <span class="kw">LD</span> (GameLogFrozen), A</code></pre>
+
+<p>Buffer фиксируется на состоянии «момент глюка», следующие 100 кадров игры не вытесняют события.</p>
+
+<h3>Чего НЕ делать</h3>
+
+<ul>
+<li>Не вызывать <code>CALL LogEvent</code> из IRQ-обработчика — IRQ может перекрыть запись в середине entry и corrupt'нуть данные.</li>
+<li>Не использовать LogEvent рекурсивно (нет защиты от reentrancy).</li>
+<li>Не логировать каждый кадр FrameCounter — затопит buffer бесполезным шумом. Только реальные game events.</li>
+<li>Не размещать buffer в slot 3 (stack page) или slot 0 (ROM mapped) — данные пропадут или будут затёрты.</li>
+</ul>
+
+<h3>Объём vs покрытие во времени</h3>
+
+<ul>
+<li>128 entries × 8 = 1 KB → ~10-25 сек активной игры</li>
+<li><b>256 entries × 8 = 2 KB → ~25-50 сек</b> (рекомендуется default)</li>
+<li>512 entries × 8 = 4 KB → 1-2 мин</li>
+</ul>
+
+<p>При активной стрельбе ~5 events на выстрел (SHOT_FIRED + BBOX_HIT + HEMI + APPR_END + INSERT) и 1-2 выстрела в секунду = 10 events/сек.</p>
 
 <h2 id="ports-ref">Приложение: список портов</h2>
 <pre><code><span class="cmt">; Видео и графика</span>
