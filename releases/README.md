@@ -2,9 +2,80 @@
 
 Собранные SPG-файлы для запуска в Unreal Speccy. Достаточно открыть `.spg` в эмуляторе.
 
+## Что есть в игре (state v16, 2026-05-16)
+
+**Геймплей:**
+- 2 играбельных уровня: «Spiral of Doom» (level 1) и «Mud Slide» (level 2)
+- Полная VDC chain physics: spawn → train phase (35 шаров FAST_ADVANCE) → repeat phase (50 шаров normal) → end-of-level
+- 6 цветов шаров (runtime `LevelNumColors`, per level: L1=4 цвета, L2=4)
+- Bullet collision с bbox 28×28 + hemisphere insert (target = i или i+1 по ближайшему non-GAP соседу через Manhattan)
+- Match-3 detection (window-3 scan) + GAP_STOP/GAP_CASCADE markers
+- Cascade chain: gap closure → новый match → roll-back головы (HSA--)
+- Match-3 explosion-анимация: 7 кадров TSU layer 1 с цветным gradient
+- Approach physics (8 px/frame, frozen-target chase до прибытия в slot)
+- Auto-spawn по таймеру, anti-3-spawn-guard
+- Game Over absorption: head вылетает в killzone → arrays shift_left → chain ушла → GAME OVER overlay
+- Auto-restart через ~4 сек после GAME OVER
+
+**Управление:**
+- Mouse: aim + LMB выстрел
+- Keyboard: O/P для поворота лягушки, SPACE для выстрела
+- Kempston JOY (для VDAC2-сборки)
+- Mouse low-pass фильтр (alpha=1/4) — гасит kempston jitter
+
+**Level Select экран:**
+- Scene 1: декоративная заставка с pyramid overlay + sky scroll dither
+- 13 уровней в таблице (только L1, L2 играбельны на текущий момент)
+- TSU-превью текущего уровня 192×120 (sprite 64×8 grid)
+- Mini-frog + mini-killzone (32×32 SPSIZ32 sprites) поверх превью, позиции из `LevelMiniCfg` (per level game-coords) + scale ×5/8
+- Per-level palette переключение (`LoadCurStagePreviewPalette`) — превью соответствует bg-цветовой схеме уровня
+- Per-level dispname в кастомном шрифте nativealien48 (gradient orange→yellow): «SPIRAL OF DOOM», «MUD SLIDE»
+- LEVEL N-N intro screen (150 кадров) перед началом игры
+
+**Графика и звук:**
+- HD-look шары диаметром ~24 px (TSU SPSIZ24), 4bpp atlas
+- HD frog 64×64 с rotation (через atan LUT, 8-octant ComputeAngle, hybrid follow)
+- Custom killzone: sun (DMA static blit) + skull (TSU sprite layer 1) с mouth animation (10 frames, open at distance < 3 cells)
+- Background canvas 360×288, ZX7-compressed pages (#80..#88 для L1, #89..#91 для L2)
+- Cursor 24×24 (TSU sprite, raw mouse pos)
+- Frog blink animation (3 frames)
+- Spin physics шаров — rolling-without-slip (per-level runtime K calibration)
+- Звука пока нет
+
+**Архитектура:**
+- TS-Conf (ZX-Evo): Z80 14 МГц, 4 МБ RAM, DMA blitter, TSU sprites/tiles, canvas 360×288 @ 50 Гц
+- SPG-сборка (`sjasmplus` → `spgbld.exe`), 64 pages × 16K
+- VDC chain model (slot array + offsets, не rigid body)
+- Single TrackData в slot 3 page #03 (stack-safe), per-level data копируется через `CopyAtlasToPage`
+- FM_EN-banked CRAM + SFILE для регистров TSU
+- Сжатие graphics: ZX7-Turbo для canvas, raw 4bpp для sprites/atlas
+
+**Инструменты разработки:**
+- `zuma_ts_emulator.py` — Z80 harness (cburbridge emulator) с CALL хуками
+- `vdc_visual_emulator.py` — Python-симулятор chain physics (Tkinter GUI)
+- `full_vdc_simulation.py` — fuzz testing (50 runs × 15000 кадров, invariant checks)
+- Circular RAM log в игре (256 entries × 8 байт, F12-dump для post-mortem диагностики редких багов)
+- Регрессионные тесты: `test_level2_gameover_trigger.py`, `test_session_fixes_2026-05-16.py`, `test_chain_advance.py`, `test_gameover.py`, etc.
+- Документация: `docs/uchebnik/index.html` (учебник 21 раздел про TS-Conf + Zuma примеры)
+
 ## Текущая версия
 
-**v14 (2026-05-11)** — `zuma_v14_2026-05-11_level1_4colors.spg`
+**v16 (2026-05-16)** — `2026-05-16-v16-session_fixes/zuma.spg`
+
+### Fixes 2026-05-16 (v16 — Game Over fix L2 + RAM log + moving-target fix + dispname/palette unify) — самые новые
+- **Game Over на level 2** — `LVL02_TRACK_SLOTS`/`TRACK_NUM_SLOTS` теперь ceil-деление (`(points+CELL-1)/CELL`). На L2 floor давал 82 slots, HSA cap=81, head max t=1639, KzCenter в t=1655 → Manhattan ≥16 → `CheckHeadAtKillzone (CP 16: JR NC, skip)` никогда не triggered → Game Over не запускался.
+- **head-comp invariance** в `InsertChainBall` — `offsets[0..idx-1] -= CELL_SIZE` для всех знаков (с floor'ом -2×CELL_SIZE). Раньше negative offsets обрезались к `-CELL_SIZE`, теряя дельту → head-side слоты «прыгали» по треку на |offset_old| px вперёд при insert. На L2 fold-зоне это давало 23 px смещение = ширина межрядового зазора.
+- **TSU_BALL_HALF=12 EQU** — bullet center = top-left + 12 (24×24 sprite). Legacy +8 (16×16) давал логический центр на 4 px влево/вверх от визуального → hemisphere check (`prev/next Manhattan`) ошибался при snipe через gap.
+- **APPROACH_SPEED=8 EQU** (было 4) — bullet добегает до target slot за 5-10 кадров вместо 10-20. Slot не успевает физически дрейфить от offset decay / HSA change → закрывает «moving-target» glitch: шар не «улетает влево» к новой позиции slot'а.
+- **Circular RAM log** — `GameLog` ring buffer 256×8 байт + `LogEvent` (preserve all regs) + 5 event types (SHOT_FIRED, BBOX_HIT, HEMI, INSERT, APPR_END). По F12-дампу парсер реконструирует пайплайн действий перед глюком, на свежем софте поймали moving-target glitch за одну сессию.
+- **Mini-sprites из level config** — `LevelMiniCfg` таблица (game-coords frog/kz per level, 4 байта на запись) + `PreviewScaleGameToTop` с scale ×5/8. Раньше hardcoded final screen-coords только под level 1; PREV/NEXT не обновлял позиции.
+- **Per-stage preview palette** — `LoadCurStagePreviewPalette` переключает SPAL=0 палитру preview-тайлов под уровень (L1→`level_01_preview_pal.bin`, L2→`level_02_preview_pal.bin`).
+- **Track entry leadin** — `ensure_offscreen_entry_leadin()` в обоих импортёрах (`import_zumahd_level.py`, `import_real_level1.py`) добавляет 32 точки lead-in перед первой видимой точкой если track начинается на экране. Закрывает «недорисовку шаров в начале трека».
+- **Level 1 dispname в nativealien48 font** — «SPIRAL OF DOOM» рендерится тем же gradient-шрифтом, что и «MUD SLIDE» на level 2 (`make_level1_text_assets.py`).
+- **Регрессионные тесты** — `test_level2_gameover_trigger.py` (Z80 harness проверка `CheckHeadAtKillzone` L1/L2) + `test_session_fixes_2026-05-16.py` (6 subtests на все правки сессии).
+- **uchebnik HTML раздел 21** — «Circular RAM log — отладка редких runtime багов через F12-dump» с примерами LogEvent, парсера, auto-freeze pattern.
+
+### Fixes 2026-05-11 (v14 — реальный Level 1 + 4 цвета + intro overlay + GAME OVER 64×64)
 
 ### Fixes 2026-05-11 (v14 — реальный Level 1 + 4 цвета + intro overlay + GAME OVER 64×64) — самые новые
 - **Реальный Level 1 "Spiral of Doom"** — bg импортирован из ZumaHD `level_src_01.png` (640×480) с crop 640→600 (5:4) + scale 0.6 → 360×288. Track из `spiral.dat` пропорционально (`(x-20)*0.6, y*0.6`).
@@ -76,9 +147,9 @@
 
 ## Запуск
 
-1. Скачать `zuma_v7_2026-05-10.spg`.
-2. `Unreal.exe zuma_v7_2026-05-10.spg`.
-3. Управление: мышь (LMB — выстрел).
+1. Скачать последний `2026-05-16-v16-session_fixes/zuma.spg` (или соответствующий .spg другой версии).
+2. `Unreal.exe zuma.spg`.
+3. Управление: мышь (LMB — выстрел), либо O/P + SPACE.
 
 ## Платформа
 
